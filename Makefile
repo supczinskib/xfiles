@@ -65,8 +65,8 @@ ICONS = \
 
 PROG_CPPFLAGS = \
 	-D_POSIX_C_SOURCE=200809L -D_BSD_SOURCE -D_GNU_SOURCE -D_DEFAULT_SOURCE \
-	-I. -I/usr/local/include -I/usr/X11R6/include \
-	-I/usr/include/freetype2 -I/usr/X11R6/include/freetype2 \
+	-I.   \
+	-I/root/luckfox-pico/sysdrv/source/buildroot/buildroot-2023.02.6/output/host/arm-buildroot-linux-uclibcgnueabihf/sysroot/usr/include/freetype2 -I/root/luckfox-pico/sysdrv/source/buildroot/buildroot-2023.02.6/output/host/arm-buildroot-linux-uclibcgnueabihf/sysroot/usr/include/freetype2 \
 	${CPPFLAGS}
 
 PROG_CFLAGS = \

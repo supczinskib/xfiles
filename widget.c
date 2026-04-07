@@ -95,23 +95,23 @@ enum {
 enum {
 	/* hardcoded object sizes in pixels */
 	/* there's no ITEM_HEIGHT for it is computed at runtime from font height */
-	THUMBSIZE       = 64,                   /* maximum thumbnail size */
+	THUMBSIZE       = 32,                   /* maximum thumbnail size */
 	ICON_MARGIN     = (THUMBSIZE / 2),      /* margin around item icon */
 	ITEM_WIDTH      = (THUMBSIZE * 2),      /* width of an item (icon + margins) */
-	MARGIN          = 16,                   /* top margin above first row */
+	MARGIN          = 8,                   /* top margin above first row */
 
 	/* draw up to NLINES lines of label; each one up to LABELWIDTH pixels long */
 	NLINES          = 2,                    /* change it for more lines below icons */
-	LABELWIDTH      = ITEM_WIDTH - 16,      /* save 8 pixels each side around label */
+	LABELWIDTH      = ITEM_WIDTH - 8,      /* save 8 pixels each side around label */
 
 	/* times in milliseconds */
 	DOUBLECLICK     = 250,                  /* time of a doubleclick, in milliseconds */
 	SCROLL_TIME     = 128,
 
 	/* scrolling */
-	SCROLL_STEP     = 32,                   /* pixels per scroll */
-	SCROLLER_SIZE   = 32,                   /* size of the scroller */
-	SCROLLER_MIN    = 16,                   /* min lines to scroll for the scroller to change */
+	SCROLL_STEP     = 16,                   /* pixels per scroll */
+	SCROLLER_SIZE   = 16,                   /* size of the scroller */
+	SCROLLER_MIN    = 8,                   /* min lines to scroll for the scroller to change */
 	HANDLE_MAX_SIZE = (SCROLLER_SIZE - 4),  /* max size of the scroller handle */
 };
 
@@ -496,11 +496,17 @@ loadxdb(Widget *widget, const char *str)
 	XrmDatabase xdb, tmp;
 	int i;
 
-	if ((xdb = XrmGetStringDatabase(str)) == NULL)
-		return NULL;
+	xdb = NULL;
+	if (str != NULL)
+		xdb = XrmGetStringDatabase(str);
 	for (i = 0; widget->cliresources[i] != NULL; i++) {
 		tmp = XrmGetStringDatabase(widget->cliresources[i]);
-		XrmMergeDatabases(tmp, &xdb);
+		if (tmp == NULL)
+			continue;
+		if (xdb == NULL)
+			xdb = tmp;
+		else
+			XrmMergeDatabases(tmp, &xdb);
 	}
 	return xdb;
 }
@@ -644,8 +650,6 @@ loadresources(Widget *widget, const char *str)
 	double fontsize = 0.0;
 	Bool changefont = False;
 
-	if (str == NULL)
-		return;
 	if ((xdb = loadxdb(widget, str)) == NULL)
 		return;
 	for (resource = 0; resource < NRESOURCES; resource++) {
@@ -2000,28 +2004,26 @@ done:
 static int
 getgeometry(Widget *widget, XRectangle *rect)
 {
-	unsigned int width, height;
-	int x, y, flags, retval;
-	XrmDatabase xdb;
-	char *str, *geometry;
-	static XRectangle DEF_SIZE = {
-		.x = 0, .y = 0,
-		.width = 600 , .height = 460
-	};
+    unsigned int width, height;
+    int x, y, flags, retval;
+    XrmDatabase xdb;
+    char *str, *geometry;
+    int sw, sh;
 
-	*rect = DEF_SIZE;
-	retval = 0;
-	if ((str = XResourceManagerString(widget->display)) == NULL)
-		return 0;
-	if ((xdb = loadxdb(widget, str)) == NULL)
-		return 0;
-	geometry = getresource(
-		xdb,
-		widget->application.class,
-		widget->application.name,
-		widget->resources[GEOMETRY].class,
-		widget->resources[GEOMETRY].name
-	);
+    sw = DisplayWidth(widget->display, widget->screen);
+    sh = DisplayHeight(widget->display, widget->screen) - 26;
+
+    rect->width  = (sw * 80) / 100;
+    rect->height = (sh * 75) / 100;
+    rect->x = (sw - rect->width) / 2;
+    rect->y = (sh - rect->height) / 2 - 13;
+
+    retval = USSize | USPosition;
+
+    str = XResourceManagerString(widget->display);
+    if ((xdb = loadxdb(widget, str)) == NULL)
+        return retval;
+
 	if (geometry == NULL)
 		goto done;
 	flags = XParseGeometry(geometry, &x, &y, &width, &height);
@@ -3549,8 +3551,7 @@ widget_geticons(Widget *widget)
 	XrmDatabase xdb;
 	char *str, *value, *p;
 
-	if ((str = XResourceManagerString(widget->display)) == NULL)
-		return NULL;
+	str = XResourceManagerString(widget->display);
 	if ((xdb = loadxdb(widget, str)) == NULL)
 		return NULL;
 	value = getresource(
