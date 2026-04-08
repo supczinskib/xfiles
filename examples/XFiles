@@ -1,0 +1,23 @@
+XFiles.faceName:		DejaVuSans
+XFiles.faceSize:		10
+
+XFiles.background:		#4c4845
+XFiles.foreground:		#dfdbd2
+XFiles.activeBackground:	#c0c0c0
+XFiles.activeForeground:	#4c4845
+
+XFiles.scrollbarBackground:	#33322f
+XFiles.scrollbarBorder:		#3c3b37
+XFiles.scrollbarThumb:		#4c4845
+
+XFiles.statusBarEnable:		true
+
+XFiles.fileIcons: \
+        *.c=code \
+        *.h=code \
+        ~/Documents/=documents_dir \
+        ~/Download/=downloads_dir \
+        ~/Memes/=meme_dir \
+        ~/Music/=music_dir \
+        ~/Pictures/=images_dir \
+        ~/Videos/=videos_dir

@@ -63,7 +63,10 @@
 	X(SELECT_FG, "ActiveForeground", "activeForeground")  \
 	X(STATUSBAR, "StatusBarEnable",  "statusBarEnable")   \
 	X(BARSTATUS, "EnableStatusBar",  "enableStatusBar")   \
-	X(OPACITY,   "Opacity",          "opacity")
+	X(OPACITY,   "Opacity",          "opacity")          \
+	X(SCROLLBAR_BG,     "ScrollbarBackground", "scrollbarBackground") \
+	X(SCROLLBAR_BORDER, "ScrollbarBorder",     "scrollbarBorder")     \
+	X(SCROLLBAR_THUMB,  "ScrollbarThumb",      "scrollbarThumb")
 
 #define STATUSBAR_HEIGHT(w) ((w)->fonth * 2)
 #define STATUSBAR_MARGIN(w) ((w)->fonth / 2)
@@ -111,8 +114,13 @@ enum {
 	/* scrolling */
 	SCROLL_STEP     = 16,                   /* pixels per scroll */
 	SCROLLER_SIZE   = 16,                   /* size of the scroller */
-	SCROLLER_MIN    = 8,                   /* min lines to scroll for the scroller to change */
+	SCROLLER_MIN    = 8,                    /* min lines to scroll for the scroller to change */
 	HANDLE_MAX_SIZE = (SCROLLER_SIZE - 4),  /* max size of the scroller handle */
+
+	/* fixed scrollbar */
+	SCROLLBAR_WIDTH      = 10,
+	SCROLLBAR_PAD        = 2,
+	SCROLLBAR_MIN_HANDLE = 12,
 };
 
 enum {
@@ -180,6 +188,9 @@ struct Widget {
 		Pixmap pix;
 		Picture pict;
 	} colors[SELECT_LAST][COLOR_LAST];
+	XRenderColor scrollbar_bg;
+	XRenderColor scrollbar_border;
+	XRenderColor scrollbar_thumb;
 	XRenderPictFormat *format, *alpha_format;
 	Visual *visual;
 	Colormap colormap;
@@ -332,6 +343,24 @@ static Atom atoms[NATOMS];
 /* ellipsis has two dots rather than three; the third comes from the extension */
 static char const *ELLIPSIS = "..";
 
+static void setrow(Widget *widget, int row);
+static void drawitems(Widget *widget);
+static void drawstatusbar(Widget *widget);
+static Bool scroll(Widget *widget, int y);
+static int nextevent(Widget *widget, XEvent *ev, Time timeout);
+static int getnrowsindir(Widget *widget);
+static int getscrollmax(Widget *widget);
+static Bool hasscrollbar(Widget *widget);
+static int getscrolloffset(Widget *widget);
+static void setscrolloffset(Widget *widget, int offset);
+static int getscrollbartrackh(Widget *widget);
+static int getscrollbarx(Widget *widget);
+static int getscrollbarhandleh(Widget *widget);
+static int getscrollbarhandley(Widget *widget);
+static void drawscrollbar(Widget *widget);
+static Bool isonscrollbar(Widget *widget, int x, int y);
+static WidgetEvent scrollbarmode(Widget *widget, Time lasttime, int y);
+
 static int
 error_handler(Display *display, XErrorEvent *error)
 {
@@ -462,6 +491,25 @@ setcolor(Widget *widget, int scheme, int colornum, const char *colorname)
 }
 
 static void
+setplaincolor(Widget *widget, XRenderColor *dst, const char *colorname)
+{
+	XColor color;
+
+	if (dst == NULL || colorname == NULL)
+		return;
+	if (!XParseColor(widget->display, widget->colormap, colorname, &color)) {
+		warnx("%s: unknown color name", colorname);
+		return;
+	}
+	*dst = (XRenderColor){
+		.red   = FLAG(color.flags, DoRed)   ? color.red   : 0x0000,
+		.green = FLAG(color.flags, DoGreen) ? color.green : 0x0000,
+		.blue  = FLAG(color.flags, DoBlue)  ? color.blue  : 0x0000,
+		.alpha = 0xFFFF,
+	};
+}
+
+static void
 setopacity(Widget *widget, const char *value)
 {
 	char *endp;
@@ -576,7 +624,11 @@ drawstatusbar(Widget *widget)
 		);
 	}
 
-	/* get percentage */
+	/*
+	 * Keep the original xfiles percentage semantics: base it on the
+	 * current logical screen position (row) within the total number of
+	 * screenfuls (nscreens), not on pixel offset.
+	 */
 	scrollpct = 100 * ((double)(widget->row + 1) / widget->nscreens);
 	scrollpct = min(scrollpct, 100);
 	(void)snprintf(scrollstr, LEN(scrollstr), "[%d%%]", scrollpct);
@@ -695,6 +747,15 @@ loadresources(Widget *widget, const char *str)
 			                     || strcasecmp(value, "true") == 0
 			                     || strcmp(value, "1") == 0;
 			break;
+		case SCROLLBAR_BG:
+			setplaincolor(widget, &widget->scrollbar_bg, value);
+			break;
+		case SCROLLBAR_BORDER:
+			setplaincolor(widget, &widget->scrollbar_border, value);
+			break;
+		case SCROLLBAR_THUMB:
+			setplaincolor(widget, &widget->scrollbar_thumb, value);
+			break;
 		default:
 			break;
 		}
@@ -738,9 +799,11 @@ embed_resize(Widget *widget)
 static int
 calcsize(Widget *widget, int w, int h)
 {
-	int ncols, nrows, ret;
+	int old_ncols, old_nrows, ret;
+	int ncols, nrows;
 	int nrows_in_window;
 	int nrows_in_dir;
+	int contentw, reserve;
 	double d;
 
 	ret = False;
@@ -748,8 +811,8 @@ calcsize(Widget *widget, int w, int h)
 		return False;
 	widget->redraw = True;
 	etlock(&widget->lock);
-	ncols = widget->ncols;
-	nrows = widget->nrows;
+	old_ncols = widget->ncols;
+	old_nrows = widget->nrows;
 	if (w > 0 && h > 0) {
 		widget->winw = w;
 		widget->winh = h;
@@ -759,13 +822,29 @@ calcsize(Widget *widget, int w, int h)
 		widget->h = max(widget->winh - STATUSBAR_HEIGHT(widget), widget->itemh);
 	else
 		widget->h = widget->winh;
-	widget->w = widget->winw;
-	nrows_in_window = widget->h / widget->itemh;
-	widget->ncols = max(widget->w / widget->itemw, 1);
-	widget->nrows = max(nrows_in_window + (widget->h % widget->itemh ? 2 : 1), 1);
-	nrows_in_dir = widget->nitems / widget->ncols;
-	nrows_in_dir += widget->nitems % widget->ncols != 0;    /* extra unfilled row */
-	widget->x0 = max((widget->w - widget->ncols * widget->itemw) / 2, 0);
+	contentw = widget->winw;
+	nrows_in_window = max(widget->h / widget->itemh, 1);
+	reserve = 0;
+	for (;;) {
+		ncols = max(contentw / widget->itemw, 1);
+		nrows_in_dir = widget->nitems / ncols;
+		nrows_in_dir += widget->nitems % ncols != 0;
+		reserve = (MARGIN + nrows_in_dir * widget->itemh > widget->h)
+			? (SCROLLBAR_WIDTH + SCROLLBAR_PAD * 2)
+			: 0;
+		if (reserve > 0 && contentw == widget->winw) {
+			contentw = max(widget->winw - reserve, widget->itemw);
+			continue;
+		}
+		break;
+	}
+	widget->w = contentw;
+	widget->ncols = ncols;
+	nrows = max(nrows_in_window + (widget->h % widget->itemh ? 2 : 1), 1);
+	widget->nrows = nrows;
+	widget->x0 = (reserve > 0)
+		? SCROLLBAR_PAD
+		: max((widget->w - widget->ncols * widget->itemw) / 2, 0);
 	widget->nscreens = nrows_in_dir - nrows_in_window + 1;
 	widget->nscreens = max(widget->nscreens, 1);
 	d = (double)widget->nscreens / SCROLLER_MIN;
@@ -774,7 +853,7 @@ calcsize(Widget *widget, int w, int h)
 	widget->handlew = min(widget->handlew, HANDLE_MAX_SIZE);
 	if (widget->handlew == HANDLE_MAX_SIZE && nrows_in_dir > nrows_in_window)
 		widget->handlew = HANDLE_MAX_SIZE - 1;
-	if (ncols != widget->ncols || nrows != widget->nrows) {
+	if (old_ncols != widget->ncols || old_nrows != widget->nrows) {
 		widget->pixw = widget->ncols * widget->itemw;
 		widget->pixh = widget->nrows * widget->itemh;
 		resetlayer(widget, LAYER_ICONS, widget->pixw, widget->pixh);
@@ -793,6 +872,158 @@ static int
 isbreakable(char c)
 {
 	return c == '.' || c == '-' || c == '_';
+}
+
+static int
+getnrowsindir(Widget *widget)
+{
+	int rows;
+
+	rows = widget->nitems / max(widget->ncols, 1);
+	rows += widget->nitems % max(widget->ncols, 1) != 0;
+	return rows;
+}
+
+static int
+getscrollmax(Widget *widget)
+{
+	/*
+	 * Keep scrollbar/scroller math aligned with the widget's real
+	 * scrolling model: row is the first fully visible row and ydiff is a
+	 * partial offset inside that row.  The maximum reachable position is
+	 * therefore the last logical screen step, i.e. (nscreens - 1)
+	 * complete item heights.
+	 */
+	return max((widget->nscreens - 1) * widget->itemh, 0);
+}
+
+static Bool
+hasscrollbar(Widget *widget)
+{
+	return getscrollmax(widget) > 0;
+}
+
+static int
+getscrolloffset(Widget *widget)
+{
+	int off;
+
+	off = widget->row * widget->itemh + widget->ydiff;
+	return min(max(off, 0), getscrollmax(widget));
+}
+
+static void
+setscrolloffset(Widget *widget, int offset)
+{
+	int maxoff, prevrow, prevdiff, newrow;
+
+	maxoff = getscrollmax(widget);
+	offset = min(max(offset, 0), maxoff);
+	prevrow = widget->row;
+	prevdiff = widget->ydiff;
+	newrow = offset / widget->itemh;
+	widget->ydiff = offset % widget->itemh;
+	setrow(widget, newrow);
+	if (prevrow != widget->row)
+		drawstatusbar(widget);
+	if (prevrow != widget->row || prevdiff != widget->ydiff)
+		drawitems(widget);
+}
+
+static int
+getscrollbartrackh(Widget *widget)
+{
+	return max(widget->h - SCROLLBAR_PAD * 2, 1);
+}
+
+static int
+getscrollbarx(Widget *widget)
+{
+	return widget->winw - SCROLLBAR_WIDTH - SCROLLBAR_PAD;
+}
+
+static int
+getscrollbarhandleh(Widget *widget)
+{
+	int trackh, contenth, handleh;
+
+	trackh = getscrollbartrackh(widget);
+	contenth = MARGIN + getnrowsindir(widget) * widget->itemh;
+	if (contenth <= 0)
+		return trackh;
+	handleh = (int)((double)widget->h * trackh / contenth);
+	handleh = max(handleh, SCROLLBAR_MIN_HANDLE);
+	handleh = min(handleh, trackh);
+	return handleh;
+}
+
+static int
+getscrollbarhandley(Widget *widget)
+{
+	int maxoff, trackh, handleh, offset;
+
+	maxoff = getscrollmax(widget);
+	if (maxoff <= 0)
+		return SCROLLBAR_PAD + 1;
+	trackh = getscrollbartrackh(widget);
+	handleh = getscrollbarhandleh(widget);
+	offset = getscrolloffset(widget);
+	return SCROLLBAR_PAD + 1 + (int)((double)offset * max(trackh - handleh - 2, 0) / maxoff);
+}
+
+static void
+drawscrollbar(Widget *widget)
+{
+	XRenderColor track, thumb, border;
+	int x, y, trackh, handleh;
+	int innerx, innerw, innerh;
+
+	if (!hasscrollbar(widget))
+		return;
+	x = getscrollbarx(widget);
+	y = getscrollbarhandley(widget);
+	trackh = getscrollbartrackh(widget);
+	handleh = getscrollbarhandleh(widget);
+	track = widget->scrollbar_bg;
+	thumb = widget->scrollbar_thumb;
+	border = widget->scrollbar_border;
+
+	/* Track/background first. */
+	innerx = x + 1;
+	innerw = max(SCROLLBAR_WIDTH - 2, 1);
+	innerh = max(trackh - 2, 1);
+	XRenderFillRectangle(widget->display, PictOpOver,
+		widget->layers[LAYER_CANVAS].pict, &track,
+		innerx, SCROLLBAR_PAD + 1, innerw, innerh);
+
+	/* Border around the whole scrollbar widget. */
+	XRenderFillRectangle(widget->display, PictOpOver,
+		widget->layers[LAYER_CANVAS].pict, &border,
+		x, SCROLLBAR_PAD, SCROLLBAR_WIDTH, 1);
+	XRenderFillRectangle(widget->display, PictOpOver,
+		widget->layers[LAYER_CANVAS].pict, &border,
+		x, SCROLLBAR_PAD + trackh - 1, SCROLLBAR_WIDTH, 1);
+	XRenderFillRectangle(widget->display, PictOpOver,
+		widget->layers[LAYER_CANVAS].pict, &border,
+		x, SCROLLBAR_PAD, 1, trackh);
+	XRenderFillRectangle(widget->display, PictOpOver,
+		widget->layers[LAYER_CANVAS].pict, &border,
+		x + SCROLLBAR_WIDTH - 1, SCROLLBAR_PAD, 1, trackh);
+
+	/* Thumb on top, single-color and without its own border. */
+	XRenderFillRectangle(widget->display, PictOpOver,
+		widget->layers[LAYER_CANVAS].pict, &thumb,
+		innerx, y, innerw, handleh);
+}
+
+static Bool
+isonscrollbar(Widget *widget, int x, int y)
+{
+	if (!hasscrollbar(widget))
+		return False;
+	if (y < 0 || y >= widget->h)
+		return False;
+	return x >= getscrollbarx(widget) && x < getscrollbarx(widget) + SCROLLBAR_WIDTH;
 }
 
 static void
@@ -1174,6 +1405,7 @@ commitdraw(Widget *widget)
 			widget->winw, STATUSBAR_HEIGHT(widget)
 		);
 	}
+	drawscrollbar(widget);
 	XRenderFillRectangle(
 		widget->display,
 		PictOpOverReverse,
@@ -1239,11 +1471,16 @@ settitle(Widget *widget)
 static int
 gethandlepos(Widget *widget)
 {
-	int retval;
+	int maxoff, off, range;
 
-	retval = HANDLE_MAX_SIZE - widget->handlew;
-	retval *= ((double)widget->row + 1) / widget->nscreens;
-	return retval;
+	range = HANDLE_MAX_SIZE - widget->handlew;
+	if (range <= 0)
+		return 0;
+	maxoff = getscrollmax(widget);
+	if (maxoff <= 0)
+		return range;
+	off = getscrolloffset(widget);
+	return (int)((double)range * off / maxoff + 0.5);
 }
 
 static void
@@ -1894,7 +2131,7 @@ endevent(Widget *widget)
 static void
 scrollerset(Widget *widget, int pos)
 {
-	int prevrow, newrow, maxpos;
+	int maxpos, maxoff, prevrow, prevdiff, offset;
 
 	maxpos = HANDLE_MAX_SIZE - widget->handlew;
 	if (maxpos <= 0) {
@@ -1903,19 +2140,15 @@ scrollerset(Widget *widget, int pos)
 	}
 	pos = max(pos, 0);
 	pos = min(pos, maxpos);
-	newrow = pos * widget->nscreens / maxpos;
-	newrow = max(newrow, 0);
-	newrow = min(newrow, widget->nscreens);
-	if (newrow >= widget->nscreens) {
-		widget->ydiff = 0;
-		newrow = widget->nscreens - 1;
-	} else {
-		widget->ydiff = 0;
-	}
+	maxoff = getscrollmax(widget);
+	if (maxoff <= 0)
+		return;
+	offset = (int)((double)pos * maxoff / maxpos + 0.5);
 	prevrow = widget->row;
-	setrow(widget, newrow);
+	prevdiff = widget->ydiff;
+	setscrolloffset(widget, offset);
 	drawscroller(widget, pos);
-	if (prevrow != newrow) {
+	if (prevrow != widget->row || prevdiff != widget->ydiff) {
 		drawstatusbar(widget);
 		drawitems(widget);
 	}
@@ -2013,7 +2246,7 @@ getgeometry(Widget *widget, XRectangle *rect)
     sw = DisplayWidth(widget->display, widget->screen);
     sh = DisplayHeight(widget->display, widget->screen) - 26;
 
-    rect->width  = (sw * 80) / 100;
+    rect->width  = (sw * 83) / 100;
     rect->height = (sh * 75) / 100;
     rect->x = (sw - rect->width) / 2;
     rect->y = (sh - rect->height) / 2 - 13;
@@ -2843,6 +3076,61 @@ dragmode(Widget *widget, Time timestamp, int index, int *selitems, int *nitems)
 }
 
 static WidgetEvent
+scrollbarmode(Widget *widget, Time lasttime, int y)
+{
+	XEvent ev;
+	int tracktop, trackh, handleh, handley, graboff, offset, maxoff;
+	Bool dragging;
+
+	if (!hasscrollbar(widget))
+		return WIDGET_NONE;
+	tracktop = SCROLLBAR_PAD + 1;
+	trackh = max(getscrollbartrackh(widget) - 2, 1);
+	handleh = getscrollbarhandleh(widget);
+	handley = getscrollbarhandley(widget);
+	maxoff = getscrollmax(widget);
+	if (maxoff <= 0)
+		return WIDGET_NONE;
+	dragging = (y >= handley && y < handley + handleh);
+	if (dragging) {
+		graboff = y - handley;
+	} else {
+		graboff = handleh / 2;
+		if (y < handley)
+			setscrolloffset(widget, getscrolloffset(widget) - widget->h / 2);
+		else
+			setscrolloffset(widget, getscrolloffset(widget) + widget->h / 2);
+	}
+	while (XGrabPointer(
+		widget->display, widget->window, False,
+		ButtonReleaseMask | PointerMotionMask,
+		GrabModeAsync, GrabModeAsync, None, None, lasttime
+	) != GrabSuccess)
+		return WIDGET_NONE;
+	for (;;) switch (nextevent(widget, &ev, SCROLL_TIME)) {
+	case CloseNotify:
+		XUngrabPointer(widget->display, lasttime);
+		return WIDGET_CLOSE;
+	case MotionNotify:
+		if (!(ev.xmotion.state & Button1Mask))
+			continue;
+		if (!isonscrollbar(widget, ev.xmotion.x, ev.xmotion.y) && !dragging)
+			continue;
+		offset = ev.xmotion.y - tracktop - graboff;
+		offset = max(offset, 0);
+		offset = min(offset, trackh - handleh);
+		if (trackh - handleh > 0)
+			setscrolloffset(widget, (int)((double)offset * maxoff / (trackh - handleh)));
+		continue;
+	case ButtonRelease:
+		XUngrabPointer(widget->display, lasttime);
+		return WIDGET_NONE;
+	case TimeoutNotify:
+		continue;
+	}
+}
+
+static WidgetEvent
 mainmode(Widget *widget, int *selitems, int *nitems, char **text)
 {
 	XEvent ev;
@@ -2874,7 +3162,13 @@ mainmode(Widget *widget, int *selitems, int *nitems, char **text)
 		clicky = ev.xbutton.y;
 		if (ev.xbutton.window != widget->window)
 			continue;
-		if (ev.xbutton.button == Button1) {
+		if (ev.xbutton.button == Button1 && isonscrollbar(widget, ev.xbutton.x, ev.xbutton.y)) {
+			event = scrollbarmode(widget, ev.xbutton.time, ev.xbutton.y);
+			if (event != WIDGET_NONE)
+				return event;
+			clicki = -1;
+			continue;
+		} else if (ev.xbutton.button == Button1) {
 			clicki = mouse1click(widget, &ev.xbutton);
 		} else if (ev.xbutton.button == Button4 || ev.xbutton.button == Button5) {
 			scroll(widget, (ev.xbutton.button == Button4 ? -SCROLL_STEP : +SCROLL_STEP));
@@ -3460,6 +3754,9 @@ widget_create(const char *class, const char *name, int argc, char *argv[], const
 		.colors[SELECT_NOT][COLOR_FG].chans = COLOR(FF,FF,FF),
 		.colors[SELECT_YES][COLOR_BG].chans = COLOR(34,65,A4),
 		.colors[SELECT_YES][COLOR_FG].chans = COLOR(FF,FF,FF),
+		.scrollbar_bg = (XRenderColor){ .red = 0xFFFF, .green = 0xFFFF, .blue = 0xFFFF, .alpha = 0x3333 },
+		.scrollbar_border = COLOR(00,00,00),
+		.scrollbar_thumb = COLOR(34,65,A4),
 		.status_enable = True,
 		.opacity = 0xFFFF,
 		.lock = PTHREAD_MUTEX_INITIALIZER,
