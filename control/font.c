@@ -46,7 +46,9 @@ openxftfont(Display *display, const char *fontname, double fontsize)
 		goto error;
 	if (fontsize > 0.0)
 		(void)FcPatternAddDouble(pattern, FC_SIZE, fontsize);
-	FcDefaultSubstitute(pattern);
+	if (!FcConfigSubstitute(NULL, pattern, FcMatchPattern))
+		goto error;
+	XftDefaultSubstitute(display, DefaultScreen(display), pattern);
 	if ((match = FcFontMatch(NULL, pattern, &result)) == NULL)
 		goto error;
 	if ((font = XftFontOpenPattern(display, match)) == NULL)
