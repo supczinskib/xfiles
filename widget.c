@@ -201,6 +201,7 @@ struct Widget {
 	int screen;
 	unsigned int depth;
 	unsigned short opacity;
+	unsigned long bgpixel;
 
 	CtrlFontSet *fontset;
 
@@ -333,6 +334,14 @@ struct Widget {
 	 * Statusbar describing highlighted item.
 	 */
 	Bool status_enable;
+
+	/*
+	 * Batch item/status redraws during high-frequency interactions
+	 * (rectangular selection, large selection changes, etc.).
+	 */
+	int batchdraw;
+	Bool itemsdirty;
+	Bool statusdirty;
 };
 
 struct Options {
@@ -421,7 +430,7 @@ resetlayer(Widget *widget, enum Layer layer, int width, int height)
 		PictOpClear,
 		widget->layers[layer].pict,
 		&(XRenderColor){ 0 },
-		0, 0, widget->w, widget->h
+		0, 0, width, height
 	);
 }
 
@@ -511,6 +520,21 @@ setplaincolor(Widget *widget, XRenderColor *dst, const char *colorname)
 		.blue  = FLAG(color.flags, DoBlue)  ? color.blue  : 0x0000,
 		.alpha = 0xFFFF,
 	};
+}
+
+static void
+setwindowbg(Widget *widget)
+{
+	XColor color;
+
+	color.red = widget->colors[SELECT_NOT][COLOR_BG].chans.red;
+	color.green = widget->colors[SELECT_NOT][COLOR_BG].chans.green;
+	color.blue = widget->colors[SELECT_NOT][COLOR_BG].chans.blue;
+	color.flags = DoRed | DoGreen | DoBlue;
+	if (XAllocColor(widget->display, widget->colormap, &color)) {
+		widget->bgpixel = color.pixel;
+		XSetWindowBackground(widget->display, widget->window, widget->bgpixel);
+	}
 }
 
 static void
@@ -826,29 +850,17 @@ calcsize(Widget *widget, int w, int h)
 		widget->h = max(widget->winh - STATUSBAR_HEIGHT(widget), widget->itemh);
 	else
 		widget->h = widget->winh;
-	contentw = widget->winw;
+	reserve = SCROLLBAR_WIDTH + SCROLLBAR_PAD * 2;
+	contentw = max(widget->winw - reserve, widget->itemw);
 	nrows_in_window = max(widget->h / widget->itemh, 1);
-	reserve = 0;
-	for (;;) {
-		ncols = max(contentw / widget->itemw, 1);
-		nrows_in_dir = widget->nitems / ncols;
-		nrows_in_dir += widget->nitems % ncols != 0;
-		reserve = (MARGIN + nrows_in_dir * widget->itemh > widget->h)
-			? (SCROLLBAR_WIDTH + SCROLLBAR_PAD * 2)
-			: 0;
-		if (reserve > 0 && contentw == widget->winw) {
-			contentw = max(widget->winw - reserve, widget->itemw);
-			continue;
-		}
-		break;
-	}
+	ncols = max(contentw / widget->itemw, 1);
+	nrows_in_dir = widget->nitems / ncols;
+	nrows_in_dir += widget->nitems % ncols != 0;
 	widget->w = contentw;
 	widget->ncols = ncols;
 	nrows = max(nrows_in_window + (widget->h % widget->itemh ? 2 : 1), 1);
 	widget->nrows = nrows;
-	widget->x0 = (reserve > 0)
-		? SCROLLBAR_PAD
-		: max((widget->w - widget->ncols * widget->itemw) / 2, 0);
+	widget->x0 = SCROLLBAR_PAD;
 	widget->nscreens = nrows_in_dir - nrows_in_window + 1;
 	widget->nscreens = max(widget->nscreens, 1);
 	d = (double)widget->nscreens / SCROLLER_MIN;
@@ -1372,7 +1384,7 @@ commitdraw(Widget *widget)
 		0, widget->ydiff - MARGIN,
 		0, 0,
 		widget->x0, 0,
-		widget->w, widget->h
+		widget->pixw, widget->h
 	);
 	XRenderComposite(
 		widget->display,
@@ -1383,7 +1395,7 @@ commitdraw(Widget *widget)
 		0, 0,
 		0, widget->ydiff - MARGIN,
 		widget->x0, 0,
-		widget->w, widget->h
+		widget->pixw, widget->h
 	);
 	XRenderComposite(
 		widget->display,
@@ -1418,12 +1430,15 @@ commitdraw(Widget *widget)
 		0, 0,
 		widget->winw, widget->winh
 	);
-	XSetWindowBackgroundPixmap(
+	XCopyArea(
 		widget->display,
+		widget->layers[LAYER_CANVAS].pix,
 		widget->window,
-		widget->layers[LAYER_CANVAS].pix
+		widget->gc,
+		0, 0,
+		widget->winw, widget->winh,
+		0, 0
 	);
-	XClearWindow(widget->display, widget->window);
 	XFlush(widget->display);
 	etunlock(&widget->lock);
 }
@@ -1750,6 +1765,31 @@ resetclipboard(Widget *widget)
 }
 
 static void
+beginbatchdraw(Widget *widget)
+{
+	widget->batchdraw++;
+}
+
+static void
+endbatchdraw(Widget *widget)
+{
+	if (widget->batchdraw <= 0)
+		return;
+	widget->batchdraw--;
+	if (widget->batchdraw != 0)
+		return;
+	if (widget->itemsdirty) {
+		drawitems(widget);
+		widget->itemsdirty = False;
+	}
+	if (widget->statusdirty) {
+		drawstatusbar(widget);
+		widget->statusdirty = False;
+	}
+	widget->redraw = True;
+}
+
+static void
 cleanwidget(Widget *widget)
 {
 	struct Thumb *thumb;
@@ -1773,6 +1813,9 @@ cleanwidget(Widget *widget)
 	}
 	widget->sel = NULL;
 	widget->rectsel = NULL;
+	widget->batchdraw = 0;
+	widget->itemsdirty = False;
+	widget->statusdirty = False;
 #define FREE(x) (free(x), x = NULL)
 	FREE(widget->gototext);
 	FREE(widget->sortby);
@@ -1833,6 +1876,11 @@ selectitem(Widget *widget, int index, int select, int rectsel)
 	} else {
 		return;
 	}
+	if (widget->batchdraw) {
+		widget->itemsdirty = True;
+		widget->redraw = True;
+		return;
+	}
 	drawitem(widget, index);
 }
 
@@ -1846,11 +1894,17 @@ highlight(Widget *widget, int index)
 		return;
 	prevhili = widget->highlight;
 	widget->highlight = index;
-	if (index != 0)
-		drawitem(widget, index);
-	/* we still have to redraw the previous entry */
-	drawitem(widget, prevhili);
-	drawstatusbar(widget);
+	if (widget->batchdraw) {
+		widget->itemsdirty = True;
+		widget->statusdirty = True;
+		widget->redraw = True;
+	} else {
+		if (index != 0)
+			drawitem(widget, index);
+		/* we still have to redraw the previous entry */
+		drawitem(widget, prevhili);
+		drawstatusbar(widget);
+	}
 	if (widget->highlight > 0) {
 		status = getitemstatus(widget, widget->highlight);
 		(void)XChangeProperty(
@@ -1932,16 +1986,20 @@ mouse1click(Widget *widget, XButtonPressedEvent *ev)
 	index = getitemundercursor(widget, ev->x, ev->y);
 	if (index > 0 && widget->issel[index] != NULL)
 		return index;
+	beginbatchdraw(widget);
 	if (!(ev->state & (ControlMask | ShiftMask)))
 		unselectitems(widget);
-	if (index < 0)
+	if (index < 0) {
+		endbatchdraw(widget);
 		return index;
+	}
 	prevhili = widget->highlight;
 	highlight(widget, index);
 	if (prevhili != -1 && ev->state & ShiftMask)
 		selectitems(widget, widget->highlight, prevhili);
 	else
 		selectitem(widget, widget->highlight, ((ev->state & ControlMask) ? widget->issel[widget->highlight] == NULL : True), False);
+	endbatchdraw(widget);
 	ownprimary(widget, ev->time);
 	return index;
 }
@@ -1953,11 +2011,13 @@ mouse3click(Widget *widget, int x, int y)
 
 	index = getitemundercursor(widget, x, y);
 	if (index != -1) {
+		beginbatchdraw(widget);
 		highlight(widget, index);
 		if (widget->issel[index] == NULL) {
 			unselectitems(widget);
 			selectitem(widget, index, True, False);
 		}
+		endbatchdraw(widget);
 	}
 	return index;
 }
@@ -2076,6 +2136,7 @@ rectselect(Widget *widget, int srcrow, int srcydiff, int x0, int y0, int x1, int
 	y1 %= widget->itemh;
 
 	/* select (unselect) items inside (outside) rectangle */
+	beginbatchdraw(widget);
 	for (i = firstvisible(widget); i <= lastvisible(widget); i++) {
 		sel = True;
 		row = i / widget->ncols;
@@ -2099,6 +2160,7 @@ rectselect(Widget *widget, int srcrow, int srcydiff, int x0, int y0, int x1, int
 		selectitem(widget, i, sel, True);
 		changed = True;
 	}
+	endbatchdraw(widget);
 	return changed;
 }
 
@@ -2129,6 +2191,8 @@ static void
 endevent(Widget *widget)
 {
 	if (widget->redraw) {
+		if (XPending(widget->display) > 0)
+			return;
 		commitdraw(widget);
 	}
 }
@@ -2684,22 +2748,68 @@ draw:
 }
 
 static void
+latestmotion(Widget *widget, XMotionEvent *motion)
+{
+	XEvent next;
+	Window root, child;
+	int rootx, rooty, winx, winy;
+	unsigned int mask;
+
+	while (XCheckTypedWindowEvent(widget->display, motion->window, MotionNotify, &next))
+		*motion = next.xmotion;
+	if (XQueryPointer(
+		widget->display,
+		motion->window,
+		&root, &child,
+		&rootx, &rooty,
+		&winx, &winy,
+		&mask
+	)) {
+		motion->x_root = rootx;
+		motion->y_root = rooty;
+		motion->x = winx;
+		motion->y = winy;
+		motion->state = mask;
+	}
+}
+
+static void
 compress_motion(Display *display, XEvent *event)
 {
 	XEvent next;
+	Window window;
 
 	if (event->type != MotionNotify)
 		return;
-	while (XPending(display)) {
-		XPeekEvent(display, &next);
-		if (next.type != MotionNotify)
-			break;
-		if (next.xmotion.window != event->xmotion.window)
-			break;
-		if (next.xmotion.subwindow != event->xmotion.subwindow)
-			break;
-		XNextEvent(display, event);
-	}
+	window = event->xmotion.window;
+	while (XCheckTypedWindowEvent(display, window, MotionNotify, &next))
+		*event = next;
+}
+
+static void
+compress_expose(Display *display, XEvent *event)
+{
+	XEvent next;
+	Window window;
+
+	if (event->type != Expose)
+		return;
+	window = event->xexpose.window;
+	while (XCheckTypedWindowEvent(display, window, Expose, &next))
+		*event = next;
+}
+
+static void
+compress_configure(Display *display, XEvent *event)
+{
+	XEvent next;
+	Window window;
+
+	if (event->type != ConfigureNotify)
+		return;
+	window = event->xconfigure.window;
+	while (XCheckTypedWindowEvent(display, window, ConfigureNotify, &next))
+		*event = next;
 }
 
 static Bool
@@ -2780,9 +2890,16 @@ close:
 		embed_close(widget, ev->xclient.data.l[1]);
 		ev->type = CloseNotify;
 		return False;
-	case ConfigureNotify:
+	case Expose:
+		if (ev->xexpose.window != widget->window)
+			break;
+		compress_expose(widget->display, ev);
+		widget->redraw = True;
+		break;
+case ConfigureNotify:
 		if (ev->xconfigure.window != widget->window)
 			break;
+		compress_configure(widget->display, ev);
 		if (calcsize(widget, ev->xconfigure.width, ev->xconfigure.height)) {
 			if (widget->highlight < 0) {
 				setrow(widget, 0);
@@ -2794,6 +2911,7 @@ close:
 			drawitems(widget);
 		}
 		drawstatusbar(widget);
+		widget->redraw = True;
 		break;
 	case PropertyNotify:
 		if (ev->xproperty.state != PropertyNewValue)
@@ -2810,6 +2928,7 @@ close:
 			if (str == NULL)
 				break;
 			loadresources(widget, str);
+			setwindowbg(widget);
 			free(str);
 			drawitems(widget);
 			widget->redraw = True;
@@ -2866,6 +2985,7 @@ dnd_event_handler(XEvent *event, void *arg)
 		return 0;
 	if (event->type != MotionNotify)
 		return 0;
+	latestmotion(widget, &event->xmotion);
 	if (event->xmotion.window != widget->window)
 		return 0;
 	x = event->xmotion.x;
@@ -2928,7 +3048,7 @@ scrollmode(Widget *widget, Time lasttime, int clickx, int clicky)
 	/* grab on scroller; so motion position is relative to it */
 	if (XGrabPointer(
 		widget->display, widget->scroller, False,
-		ButtonReleaseMask | ButtonPressMask | PointerMotionMask,
+		ButtonReleaseMask | ButtonPressMask | PointerMotionMask | PointerMotionHintMask,
 		GrabModeAsync, GrabModeAsync, None, None, lasttime
 	) != GrabSuccess)
 		goto done;
@@ -2944,6 +3064,7 @@ scrollmode(Widget *widget, Time lasttime, int clickx, int clicky)
 	case FocusOut:
 		goto done;
 	case MotionNotify:
+		latestmotion(widget, &ev.xmotion);
 		if (ev.xmotion.y < 0)
 			pos = ev.xmotion.y;
 		else if (ev.xmotion.y > SCROLLER_SIZE)
@@ -2978,8 +3099,10 @@ scrollmode(Widget *widget, Time lasttime, int clickx, int clicky)
 			grabpos = ev.xbutton.y - grabpos;
 		scrollerset(widget, ev.xbutton.y - grabpos);
 		while (nextevent(widget, &ev, SCROLL_TIME) != ButtonRelease)
-			if (ev.type == MotionNotify)
+			if (ev.type == MotionNotify) {
+				latestmotion(widget, &ev.xmotion);
 				scrollerset(widget, ev.xmotion.y - grabpos);
+			}
 		continue;
 	}
 done:
@@ -3015,6 +3138,7 @@ selmode(Widget *widget, int shift, int clickx, int clicky)
 	case ButtonRelease:
 		goto done;
 	case MotionNotify:
+		latestmotion(widget, &ev.xmotion);
 		x = ev.xmotion.x;
 		y = ev.xmotion.y;
 motion:
@@ -3127,7 +3251,7 @@ scrollbarmode(Widget *widget, Time lasttime, int y)
 	}
 	while (XGrabPointer(
 		widget->display, widget->window, False,
-		ButtonReleaseMask | PointerMotionMask,
+		ButtonReleaseMask | Button1MotionMask | PointerMotionHintMask,
 		GrabModeAsync, GrabModeAsync, None, None, lasttime
 	) != GrabSuccess)
 		return WIDGET_NONE;
@@ -3136,6 +3260,7 @@ scrollbarmode(Widget *widget, Time lasttime, int y)
 		XUngrabPointer(widget->display, lasttime);
 		return WIDGET_CLOSE;
 	case MotionNotify:
+		latestmotion(widget, &ev.xmotion);
 		if (!(ev.xmotion.state & Button1Mask))
 			continue;
 		if (!isonscrollbar(widget, ev.xmotion.x, ev.xmotion.y) && !dragging)
@@ -3242,6 +3367,7 @@ mainmode(Widget *widget, int *selitems, int *nitems, char **text)
 		}
 		return WIDGET_OPEN;
 	case MotionNotify:
+		latestmotion(widget, &ev.xmotion);
 		if (ev.xmotion.window != widget->window)
 			continue;
 		if (!(ev.xmotion.state & Button1Mask))
@@ -3411,8 +3537,9 @@ initwindow(Widget *widget, struct Options *options)
 		geometry,
 		SubstructureRedirectMask | SubstructureNotifyMask |
 		StructureNotifyMask | PropertyChangeMask | FocusChangeMask |
+		ExposureMask |
 		KeyPressMask | KeyReleaseMask |
-		PointerMotionMask | ButtonReleaseMask | ButtonPressMask,
+		Button1MotionMask | PointerMotionHintMask | ButtonReleaseMask | ButtonPressMask,
 		False
 	);
 	if (widget->window == None) {
@@ -3423,7 +3550,7 @@ initwindow(Widget *widget, struct Options *options)
 		widget,
 		widget->window,
 		(XRectangle){.width = SCROLLER_SIZE, .height = SCROLLER_SIZE},
-		ButtonReleaseMask | ButtonPressMask | PointerMotionMask,
+		ButtonReleaseMask | ButtonPressMask | PointerMotionMask | PointerMotionHintMask,
 		True
 	);
 	if (widget->scroller == None) {
@@ -3435,6 +3562,7 @@ initwindow(Widget *widget, struct Options *options)
 		warnx("could not create graphics context");
 		return RETURN_FAILURE;
 	}
+	XSetGraphicsExposures(widget->display, widget->gc, False);
 	(void)XSetWMProtocols(
 		widget->display,
 		widget->window,
@@ -3557,6 +3685,7 @@ inittheme(Widget *widget, struct Options *options)
 		}
 	}
 	loadresources(widget, XResourceManagerString(widget->display));
+	setwindowbg(widget);
 	if (widget->fontset == NULL)
 		setfont(widget, NULL, 0.0);
 	if (widget->fontset == NULL) {
