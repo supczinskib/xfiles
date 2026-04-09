@@ -1,3 +1,5 @@
+#include <time.h>
+
 typedef struct Scroll {
 	/* scroll position */
 	int row, ydiff;
@@ -8,7 +10,9 @@ typedef struct Item {
 	unsigned char mode;     /* entry mode */
 	char *name;             /* item display name */
 	char *fullname;         /* item full name */
-	char *status;           /* item statusbar info */
+	char *status;           /* item statusbar info */	
+	struct timespec mtime;  /* modification time */
+	size_t size;            /* size in bytes */
 	size_t icon;            /* index for the icon array */
 } Item;
 
@@ -26,6 +30,8 @@ typedef enum {
 	WIDGET_DROPCOPY,
 	WIDGET_DROPMOVE,
 	WIDGET_DROPLINK,
+	WIDGET_SORTBY,
+	WIDGET_REFRESH,
 	WIDGET_ERROR,
 } WidgetEvent;
 
@@ -51,11 +57,16 @@ int widget_set(
 /* get value of icons resource into allocated string */
 char *widget_geticons(Widget *widget);
 
+/* get value of sortBy resource into allocated string */
+char *widget_get_sortby(Widget *widget);
+
 WidgetEvent widget_wait(Widget *widget);
 
 int widget_fd(Widget *widget);
 
 void widget_map(Widget *widget);
+
+unsigned long widget_window(Widget *widget);
 
 WidgetEvent widget_poll(Widget *widget, int *selitems, int *nselitems, Scroll *scrl, char **sel);
 

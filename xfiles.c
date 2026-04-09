@@ -1,5 +1,8 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/inotify.h>
+#include <sys/prctl.h>
+#include <signal.h>
 
 #include <err.h>
 #include <errno.h>
@@ -15,6 +18,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+
+#include <X11/Xlib.h>
 
 #include "util.h"
 #include "widget.h"
@@ -50,6 +55,14 @@ struct Cwd {
 	char *here;             /* display path (~/foo rather than /home/user/foo) */
 };
 
+enum SortBy {
+	SORTBY_NAME,
+	SORTBY_TIME,
+	SORTBY_SIZE,
+};
+
+static enum SortBy sortby_current = SORTBY_NAME;
+
 struct FM {
 	Widget *widget;
 	Item *entries;
@@ -80,9 +93,12 @@ struct FM {
 	size_t thumbnaildirlen;
 
 	char *opener;
+	enum SortBy sortby;
+	pid_t watcherpid;
 };
 
 static int hide = 1;
+
 
 static struct {
 	char u;
@@ -97,11 +113,105 @@ static struct {
 	{ 'E', 1024LL * 1024 * 1024 * 1024 * 1024 * 1024 },
 };
 
+
+static void watcher_stop(struct FM *fm);
+
+static void
+watcher_send_refresh(unsigned long window)
+{
+	Display *dpy;
+	Atom atom;
+	XEvent ev;
+
+	if ((dpy = XOpenDisplay(NULL)) == NULL)
+		return;
+	atom = XInternAtom(dpy, "_CONTROL_REFRESH", False);
+	memset(&ev, 0, sizeof(ev));
+	ev.xclient.type = ClientMessage;
+	ev.xclient.display = dpy;
+	ev.xclient.window = (Window)window;
+	ev.xclient.message_type = atom;
+	ev.xclient.format = 32;
+	XSendEvent(dpy, (Window)window, False, NoEventMask, &ev);
+	XFlush(dpy);
+	XCloseDisplay(dpy);
+}
+
+static void
+watcher_run(const char *path, unsigned long window)
+{
+	char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+	int fd, wd;
+	ssize_t n;
+
+#ifdef PR_SET_NAME
+	(void)prctl(PR_SET_NAME, "xfiles-watch", 0, 0, 0);
+#endif
+#ifdef PR_SET_PDEATHSIG
+	(void)prctl(PR_SET_PDEATHSIG, SIGTERM);
+	if (getppid() == 1)
+		_exit(EXIT_SUCCESS);
+#endif
+	fd = inotify_init1(IN_CLOEXEC);
+	if (fd == -1)
+		_exit(EXIT_FAILURE);
+	wd = inotify_add_watch(fd, path,
+		IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO |
+		IN_CLOSE_WRITE | IN_ATTRIB | IN_DELETE_SELF | IN_MOVE_SELF);
+	if (wd == -1)
+		_exit(EXIT_FAILURE);
+	for (;;) {
+		n = read(fd, buf, sizeof(buf));
+		if (n <= 0) {
+			if (n < 0 && errno == EINTR)
+				continue;
+			break;
+		}
+		watcher_send_refresh(window);
+	}
+	if (wd != -1)
+		inotify_rm_watch(fd, wd);
+	close(fd);
+	_exit(EXIT_SUCCESS);
+}
+
+static void
+watcher_start(struct FM *fm)
+{
+	pid_t pid;
+
+	watcher_stop(fm);
+	pid = efork();
+	if (pid == 0) {
+		watcher_run(fm->cwd->path, widget_window(fm->widget));
+	}
+	fm->watcherpid = pid;
+}
+
+static void
+watcher_stop(struct FM *fm)
+{
+	if (fm->watcherpid <= 0)
+		return;
+	kill(fm->watcherpid, SIGTERM);
+	(void)waitpid(fm->watcherpid, NULL, 0);
+	fm->watcherpid = 0;
+}
+
 static void
 usage(void)
 {
 	(void)fprintf(stderr, "usage: xfiles [-a] [-N name] [-X resources] [path]\n");
 	exit(1);
+}
+
+static enum SortBy
+sortby_decode(const char *s)
+{
+	if (s == NULL)		return SORTBY_NAME;
+	if (strcasecmp(s, "time") == 0)		return SORTBY_TIME;
+	if (strcasecmp(s, "size") == 0)		return SORTBY_SIZE;
+	return SORTBY_NAME;
 }
 
 static int
@@ -249,6 +359,7 @@ static int
 entrycmp(const void *ap, const void *bp)
 {
 	int aisdir, bisdir;
+	int r = 0;
 	Item *a, *b;
 
 	a = (Item *)ap;
@@ -272,6 +383,24 @@ entrycmp(const void *ap, const void *bp)
 		return -1;
 	if (b->name[0] == '.' && a->name[0] != '.')
 		return 1;
+
+	switch (sortby_current) {
+	case SORTBY_TIME:
+		if (a->mtime.tv_sec != b->mtime.tv_sec)
+			r = (a->mtime.tv_sec > b->mtime.tv_sec) ? -1 : 1;
+		else if (a->mtime.tv_nsec != b->mtime.tv_nsec)
+			r = (a->mtime.tv_nsec > b->mtime.tv_nsec) ? -1 : 1;
+		break;
+	case SORTBY_SIZE:
+		if (a->size != b->size)
+			r = (a->size > b->size) ? -1 : 1;
+		break;
+	case SORTBY_NAME:
+	default:
+		break;
+	}
+	if (r != 0)
+		return r;
 	return strcoll(a->name, b->name);
 }
 
@@ -534,9 +663,13 @@ diropen(struct FM *fm, struct Cwd *cwd, const char *path)
 			warn("%s", array[i]->d_name);
 			fm->entries[i].status = NULL;
 			fm->entries[i].mode = 0;
+			fm->entries[i].mtime = (struct timespec){0};
+			fm->entries[i].size = 0;
 		} else {
 			fm->entries[i].status = statusfmt(&sb);
 			fm->entries[i].mode = filemode(fm, &sb, array[i]->d_name);
+			fm->entries[i].mtime = sb.st_mtim;
+			fm->entries[i].size = sb.st_size;
 		}
 		fm->entries[i].name = estrdup(array[i]->d_name);
 		fm->entries[i].fullname = fullpath(cwd->path, array[i]->d_name);
@@ -544,6 +677,7 @@ diropen(struct FM *fm, struct Cwd *cwd, const char *path)
 		free(array[i]);
 	}
 	free(array);
+	sortby_current = fm->sortby;
 	qsort(fm->entries, fm->nentries, sizeof(*fm->entries), entrycmp);
 	if (strstr(cwd->path, fm->home) == cwd->path &&
 	    (cwd->path[fm->homelen] == '/' || cwd->path[fm->homelen] == '\0')) {
@@ -612,10 +746,59 @@ error:
 	return;
 }
 
+#define DEF_EDITOR      "nano"
+#define DEF_TERMINAL    "xterm"
+
+static bool
+should_edit_empty_text(const char *path)
+{
+	struct stat sb;
+
+	if (stat(path, &sb) == -1)
+		return false;
+	if (!S_ISREG(sb.st_mode))
+		return false;
+	return sb.st_size == 0;
+}
+
+static void
+spawn_editor_for_file(const char *path)
+{
+	const char *terminal, *editor;
+	pid_t pid;
+
+	terminal = getenv("TERMINAL");
+	if (terminal == NULL || *terminal == ' ')
+		terminal = DEF_TERMINAL;
+	editor = getenv("EDITOR");
+	if (editor == NULL || *editor == ' ')
+		editor = DEF_EDITOR;
+
+	if ((pid = efork()) == 0) {
+		if (efork() == 0) {
+			eexec((char *[]){
+				(char *)terminal,
+				"-e",
+				(char *)editor,
+				(char *)path,
+				NULL,
+			});
+			exit(EXIT_FAILURE);
+		}
+		exit(EXIT_SUCCESS);
+	}
+	waitpid(pid, NULL, 0);
+}
+
 static void
 fileopen(struct FM *fm, char *path)
 {
 	pid_t pid;
+
+	if (should_edit_empty_text(path)) {
+		spawn_editor_for_file(path);
+		return;
+	}
 
 	if ((pid = efork()) == 0) {
 		if (efork() == 0) {
@@ -1085,6 +1268,11 @@ main(int argc, char *argv[])
 	if ((fm.widget = widget_create(APPCLASS, name, saveargc, saveargv, resources)) == NULL)
 		exit(EXIT_FAILURE);
 	fm.widgetfd = widget_fd(fm.widget);
+	{
+		char *sb = widget_get_sortby(fm.widget);
+		fm.sortby = sortby_decode(sb);
+		free(sb);
+	}
 #if __OpenBSD__
 	if (pledge("stdio rpath proc exec", NULL) == RETURN_FAILURE)
 		err(EXIT_FAILURE, "pledge");
@@ -1097,6 +1285,7 @@ main(int argc, char *argv[])
 		goto error;
 	createthumbthread(&fm);
 	widget_map(fm.widget);
+	watcher_start(&fm);
 	text = NULL;
 	while ((event = widget_poll(fm.widget, fm.selitems, &nitems, &fm.cwd->scrl, &text)) != WIDGET_CLOSE) {
 		if (event == WIDGET_GOTO && strcmp(text, "-") == 0)
@@ -1107,6 +1296,12 @@ main(int argc, char *argv[])
 		case WIDGET_ERROR:
 			exitval = EXIT_FAILURE;
 			goto done;
+			break;
+		case WIDGET_REFRESH:
+			if (changedir(&fm, fm.cwd->path, true) == RETURN_FAILURE) {
+				exitval = EXIT_FAILURE;
+				goto done;
+			}
 			break;
 		case WIDGET_CONTEXT:
 			if (runcontext(&fm, MENU, nitems) == WIDGET_CLOSE)
@@ -1187,6 +1382,17 @@ main(int argc, char *argv[])
 				exitval = EXIT_FAILURE;
 				goto done;
 			}
+			free(text);
+			text = NULL;
+			break;
+		case WIDGET_SORTBY:
+			fm.sortby = sortby_decode(text);
+			free(text);
+			text = NULL;
+			if (changedir(&fm, fm.cwd->path, true) == RETURN_FAILURE) {
+				exitval = EXIT_FAILURE;
+				goto done;
+			}
 			break;
 		default:
 			break;
@@ -1194,6 +1400,7 @@ main(int argc, char *argv[])
 		text = NULL;
 	}
 done:
+	watcher_stop(&fm);
 	closethumbthread(&fm);
 error:
 	freefm(&fm);

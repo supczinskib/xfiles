@@ -1,273 +1,488 @@
 #!/bin/sh
 # xfilesctl -- XFiles control script
-#
-# This file is called by xfiles(1) upon user interaction.
-#
-# When invoked, XFiles waits for this script to exit.  Therefore, if
-# this script does something that takes too much time to return, the
-# XFiles window will become unresponsive.
-#
-# If this script calls a program that may take some time, you should
-# do it asynchronously by ending the command with an ampersand (&).
-#
-# This script depends on the following programs:
-# - $OPENER (defaults to xdg-open) for opening files.
-# - $EDITOR (defaults to vi) for editing text files.
-# - xmessage, for displaying dialogs.
-# - xterm, for opening the text editor.
-# - xmenu, for popping up a mouse-based menu.
-# - dmenu, for popping up a keyboard-based menu.
-# - xclip, for setting the clipboard.
-# - xprop, for setting window properties.
-# - File management core utilities (rm, mkdir, mv, cp, etc).
-# - Sed and AWK.
+# Simplified for minimal system: no dmenu, no xmessage, no xclip.
 
-# set this to false to not open dialogs asking for confirmation
 ask=true
 
-# default paths
-TRASH="${TRASH:-"${XDG_DATA_HOME:-"$HOME/.local/share"}/Trash"}"
-
-# default commands
+TRASH_DIR="${TRASH_DIR:-"$HOME/Trash"}"
+TRASH_INFO_DIR="${TRASH_INFO_DIR:-"${XDG_DATA_HOME:-"$HOME/.local/share"}/Trash/info"}"
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+STATE_FILE="$STATE_DIR/xfilesctl-clipboard-${WINDOWID:-0}"
 OPENER="${OPENER:-"xdg-open"}"
 EDITOR="${EDITOR:-"${VISUAL:-"vi"}"}"
 
-# print error message
+# --- i18n (UTF-8) ----------------------------------------------------------
+# UI language is selected from $LANG (e.g. pl_PL.UTF-8 -> pl_PL).
+# Supported locales: ar_SA, zh_CN, nl_NL, en_US, fr_FR, de_DE, it_IT, pl_PL,
+#                    pt_PT, ru_RU, es_ES, tr_TR.
+
+ui_lang_detect() {
+	lang=${LANG:-en_US}
+	lang=${lang%%.*}
+	lang=${lang%@*}
+	case "$lang" in
+		(ar_SA*|ar*) printf '%s\n' ar_SA ;;
+		(zh_CN*|zh*|zh_Hans*|zh_SG*) printf '%s\n' zh_CN ;;
+		(nl_NL*|nl*) printf '%s\n' nl_NL ;;
+		(fr_FR*|fr*) printf '%s\n' fr_FR ;;
+		(de_DE*|de*) printf '%s\n' de_DE ;;
+		(it_IT*|it*) printf '%s\n' it_IT ;;
+		(pl_PL*|pl*) printf '%s\n' pl_PL ;;
+		(pt_PT*|pt*) printf '%s\n' pt_PT ;;
+		(ru_RU*|ru*) printf '%s\n' ru_RU ;;
+		(es_ES*|es*) printf '%s\n' es_ES ;;
+		(tr_TR*|tr*) printf '%s\n' tr_TR ;;
+		(en_US*|en*) printf '%s\n' en_US ;;
+		(*) printf '%s\n' en_US ;;
+	esac
+}
+
+tr() {
+	key=$1
+	case "$UI_LANG:$key" in
+		# English (default)
+		(en_US:YES) printf '%s' 'Yes' ;;
+		(en_US:NO) printf '%s' 'No' ;;
+		(en_US:GO_UP) printf '%s' 'Go Up' ;;
+		(en_US:PASTE) printf '%s' 'Paste' ;;
+		(en_US:SORT) printf '%s' 'Sort' ;;
+		(en_US:NAME) printf '%s' 'Name' ;;
+		(en_US:TIME) printf '%s' 'Time' ;;
+		(en_US:SIZE) printf '%s' 'Size' ;;
+		(en_US:NEW_FILE) printf '%s' 'New File' ;;
+		(en_US:NEW_FOLDER) printf '%s' 'New Folder' ;;
+		(en_US:CUT) printf '%s' 'Cut' ;;
+		(en_US:COPY) printf '%s' 'Copy' ;;
+		(en_US:MOVE) printf '%s' 'Move' ;;
+		(en_US:LINK) printf '%s' 'Link' ;;
+		(en_US:RENAME) printf '%s' 'Rename' ;;
+		(en_US:MOVE_TO_TRASH) printf '%s' 'Move to Trash' ;;
+		(en_US:EDIT) printf '%s' 'Edit' ;;
+		(en_US:RESTORE) printf '%s' 'Restore' ;;
+		(en_US:EMPTY_TRASH) printf '%s' 'Empty Trash' ;;
+
+		# Polish
+		(pl_PL:YES) printf '%s' 'Tak' ;;
+		(pl_PL:NO) printf '%s' 'Nie' ;;
+		(pl_PL:GO_UP) printf '%s' 'W górę' ;;
+		(pl_PL:PASTE) printf '%s' 'Wklej' ;;
+		(pl_PL:SORT) printf '%s' 'Sortuj' ;;
+		(pl_PL:NAME) printf '%s' 'Nazwa' ;;
+		(pl_PL:TIME) printf '%s' 'Czas' ;;
+		(pl_PL:SIZE) printf '%s' 'Rozmiar' ;;
+		(pl_PL:NEW_FILE) printf '%s' 'Nowy plik' ;;
+		(pl_PL:NEW_FOLDER) printf '%s' 'Nowy folder' ;;
+		(pl_PL:CUT) printf '%s' 'Wytnij' ;;
+		(pl_PL:COPY) printf '%s' 'Kopiuj' ;;
+		(pl_PL:MOVE) printf '%s' 'Przenieś' ;;
+		(pl_PL:LINK) printf '%s' 'Utwórz link' ;;
+		(pl_PL:RENAME) printf '%s' 'Zmień nazwę' ;;
+		(pl_PL:MOVE_TO_TRASH) printf '%s' 'Przenieś do kosza' ;;
+		(pl_PL:EDIT) printf '%s' 'Edytuj' ;;
+		(pl_PL:RESTORE) printf '%s' 'Przywróć' ;;
+		(pl_PL:EMPTY_TRASH) printf '%s' 'Opróżnij kosz' ;;
+
+		# German
+		(de_DE:YES) printf '%s' 'Ja' ;;
+		(de_DE:NO) printf '%s' 'Nein' ;;
+		(de_DE:GO_UP) printf '%s' 'Übergeordnetes Verzeichnis' ;;
+		(de_DE:PASTE) printf '%s' 'Einfügen' ;;
+		(de_DE:SORT) printf '%s' 'Sortieren' ;;
+		(de_DE:NAME) printf '%s' 'Name' ;;
+		(de_DE:TIME) printf '%s' 'Datum' ;;
+		(de_DE:SIZE) printf '%s' 'Größe' ;;
+		(de_DE:NEW_FILE) printf '%s' 'Neue Datei' ;;
+		(de_DE:NEW_FOLDER) printf '%s' 'Neuer Ordner' ;;
+		(de_DE:CUT) printf '%s' 'Ausschneiden' ;;
+		(de_DE:COPY) printf '%s' 'Kopieren' ;;
+		(de_DE:MOVE) printf '%s' 'Verschieben' ;;
+		(de_DE:LINK) printf '%s' 'Verknüpfung erstellen' ;;
+		(de_DE:RENAME) printf '%s' 'Umbenennen' ;;
+		(de_DE:MOVE_TO_TRASH) printf '%s' 'In den Papierkorb verschieben' ;;
+		(de_DE:EDIT) printf '%s' 'Bearbeiten' ;;
+		(de_DE:RESTORE) printf '%s' 'Wiederherstellen' ;;
+		(de_DE:EMPTY_TRASH) printf '%s' 'Papierkorb leeren' ;;
+
+		# French
+		(fr_FR:YES) printf '%s' 'Oui' ;;
+		(fr_FR:NO) printf '%s' 'Non' ;;
+		(fr_FR:GO_UP) printf '%s' 'Dossier parent' ;;
+		(fr_FR:PASTE) printf '%s' 'Coller' ;;
+		(fr_FR:SORT) printf '%s' 'Trier' ;;
+		(fr_FR:NAME) printf '%s' 'Nom' ;;
+		(fr_FR:TIME) printf '%s' 'Date' ;;
+		(fr_FR:SIZE) printf '%s' 'Taille' ;;
+		(fr_FR:NEW_FILE) printf '%s' 'Nouveau fichier' ;;
+		(fr_FR:NEW_FOLDER) printf '%s' 'Nouveau dossier' ;;
+		(fr_FR:CUT) printf '%s' 'Couper' ;;
+		(fr_FR:COPY) printf '%s' 'Copier' ;;
+		(fr_FR:MOVE) printf '%s' 'Déplacer' ;;
+		(fr_FR:LINK) printf '%s' 'Créer un lien' ;;
+		(fr_FR:RENAME) printf '%s' 'Renommer' ;;
+		(fr_FR:MOVE_TO_TRASH) printf '%s' 'Mettre à la corbeille' ;;
+		(fr_FR:EDIT) printf '%s' 'Modifier' ;;
+		(fr_FR:RESTORE) printf '%s' 'Restaurer' ;;
+		(fr_FR:EMPTY_TRASH) printf '%s' 'Vider la corbeille' ;;
+
+		# Italian
+		(it_IT:YES) printf '%s' 'Sì' ;;
+		(it_IT:NO) printf '%s' 'No' ;;
+		(it_IT:GO_UP) printf '%s' 'Cartella superiore' ;;
+		(it_IT:PASTE) printf '%s' 'Incolla' ;;
+		(it_IT:SORT) printf '%s' 'Ordina' ;;
+		(it_IT:NAME) printf '%s' 'Nome' ;;
+		(it_IT:TIME) printf '%s' 'Data' ;;
+		(it_IT:SIZE) printf '%s' 'Dimensione' ;;
+		(it_IT:NEW_FILE) printf '%s' 'Nuovo file' ;;
+		(it_IT:NEW_FOLDER) printf '%s' 'Nuova cartella' ;;
+		(it_IT:CUT) printf '%s' 'Taglia' ;;
+		(it_IT:COPY) printf '%s' 'Copia' ;;
+		(it_IT:MOVE) printf '%s' 'Sposta' ;;
+		(it_IT:LINK) printf '%s' 'Crea collegamento' ;;
+		(it_IT:RENAME) printf '%s' 'Rinomina' ;;
+		(it_IT:MOVE_TO_TRASH) printf '%s' 'Sposta nel cestino' ;;
+		(it_IT:EDIT) printf '%s' 'Modifica' ;;
+		(it_IT:RESTORE) printf '%s' 'Ripristina' ;;
+		(it_IT:EMPTY_TRASH) printf '%s' 'Svuota cestino' ;;
+
+		# Spanish
+		(es_ES:YES) printf '%s' 'Sí' ;;
+		(es_ES:NO) printf '%s' 'No' ;;
+		(es_ES:GO_UP) printf '%s' 'Carpeta superior' ;;
+		(es_ES:PASTE) printf '%s' 'Pegar' ;;
+		(es_ES:SORT) printf '%s' 'Ordenar' ;;
+		(es_ES:NAME) printf '%s' 'Nombre' ;;
+		(es_ES:TIME) printf '%s' 'Fecha' ;;
+		(es_ES:SIZE) printf '%s' 'Tamaño' ;;
+		(es_ES:NEW_FILE) printf '%s' 'Nuevo archivo' ;;
+		(es_ES:NEW_FOLDER) printf '%s' 'Nueva carpeta' ;;
+		(es_ES:CUT) printf '%s' 'Cortar' ;;
+		(es_ES:COPY) printf '%s' 'Copiar' ;;
+		(es_ES:MOVE) printf '%s' 'Mover' ;;
+		(es_ES:LINK) printf '%s' 'Crear enlace' ;;
+		(es_ES:RENAME) printf '%s' 'Renombrar' ;;
+		(es_ES:MOVE_TO_TRASH) printf '%s' 'Mover a la papelera' ;;
+		(es_ES:EDIT) printf '%s' 'Editar' ;;
+		(es_ES:RESTORE) printf '%s' 'Restaurar' ;;
+		(es_ES:EMPTY_TRASH) printf '%s' 'Vaciar papelera' ;;
+
+		# Portuguese (Portugal)
+		(pt_PT:YES) printf '%s' 'Sim' ;;
+		(pt_PT:NO) printf '%s' 'Não' ;;
+		(pt_PT:GO_UP) printf '%s' 'Pasta acima' ;;
+		(pt_PT:PASTE) printf '%s' 'Colar' ;;
+		(pt_PT:SORT) printf '%s' 'Ordenar' ;;
+		(pt_PT:NAME) printf '%s' 'Nome' ;;
+		(pt_PT:TIME) printf '%s' 'Data' ;;
+		(pt_PT:SIZE) printf '%s' 'Tamanho' ;;
+		(pt_PT:NEW_FILE) printf '%s' 'Novo ficheiro' ;;
+		(pt_PT:NEW_FOLDER) printf '%s' 'Nova pasta' ;;
+		(pt_PT:CUT) printf '%s' 'Cortar' ;;
+		(pt_PT:COPY) printf '%s' 'Copiar' ;;
+		(pt_PT:MOVE) printf '%s' 'Mover' ;;
+		(pt_PT:LINK) printf '%s' 'Criar ligação' ;;
+		(pt_PT:RENAME) printf '%s' 'Renomear' ;;
+		(pt_PT:MOVE_TO_TRASH) printf '%s' 'Mover para o lixo' ;;
+		(pt_PT:EDIT) printf '%s' 'Editar' ;;
+		(pt_PT:RESTORE) printf '%s' 'Restaurar' ;;
+		(pt_PT:EMPTY_TRASH) printf '%s' 'Esvaziar lixo' ;;
+
+		# Dutch
+		(nl_NL:YES) printf '%s' 'Ja' ;;
+		(nl_NL:NO) printf '%s' 'Nee' ;;
+		(nl_NL:GO_UP) printf '%s' 'Bovenliggende map' ;;
+		(nl_NL:PASTE) printf '%s' 'Plakken' ;;
+		(nl_NL:SORT) printf '%s' 'Sorteren' ;;
+		(nl_NL:NAME) printf '%s' 'Naam' ;;
+		(nl_NL:TIME) printf '%s' 'Datum' ;;
+		(nl_NL:SIZE) printf '%s' 'Grootte' ;;
+		(nl_NL:NEW_FILE) printf '%s' 'Nieuw bestand' ;;
+		(nl_NL:NEW_FOLDER) printf '%s' 'Nieuwe map' ;;
+		(nl_NL:CUT) printf '%s' 'Knippen' ;;
+		(nl_NL:COPY) printf '%s' 'Kopiëren' ;;
+		(nl_NL:MOVE) printf '%s' 'Verplaatsen' ;;
+		(nl_NL:LINK) printf '%s' 'Koppeling maken' ;;
+		(nl_NL:RENAME) printf '%s' 'Hernoemen' ;;
+		(nl_NL:MOVE_TO_TRASH) printf '%s' 'Naar prullenbak verplaatsen' ;;
+		(nl_NL:EDIT) printf '%s' 'Bewerken' ;;
+		(nl_NL:RESTORE) printf '%s' 'Herstellen' ;;
+		(nl_NL:EMPTY_TRASH) printf '%s' 'Prullenbak legen' ;;
+
+		# Russian
+		(ru_RU:YES) printf '%s' 'Да' ;;
+		(ru_RU:NO) printf '%s' 'Нет' ;;
+		(ru_RU:GO_UP) printf '%s' 'На уровень вверх' ;;
+		(ru_RU:PASTE) printf '%s' 'Вставить' ;;
+		(ru_RU:SORT) printf '%s' 'Сортировать' ;;
+		(ru_RU:NAME) printf '%s' 'Имя' ;;
+		(ru_RU:TIME) printf '%s' 'Дата' ;;
+		(ru_RU:SIZE) printf '%s' 'Размер' ;;
+		(ru_RU:NEW_FILE) printf '%s' 'Новый файл' ;;
+		(ru_RU:NEW_FOLDER) printf '%s' 'Новая папка' ;;
+		(ru_RU:CUT) printf '%s' 'Вырезать' ;;
+		(ru_RU:COPY) printf '%s' 'Копировать' ;;
+		(ru_RU:MOVE) printf '%s' 'Переместить' ;;
+		(ru_RU:LINK) printf '%s' 'Создать ссылку' ;;
+		(ru_RU:RENAME) printf '%s' 'Переименовать' ;;
+		(ru_RU:MOVE_TO_TRASH) printf '%s' 'Переместить в корзину' ;;
+		(ru_RU:EDIT) printf '%s' 'Редактировать' ;;
+		(ru_RU:RESTORE) printf '%s' 'Восстановить' ;;
+		(ru_RU:EMPTY_TRASH) printf '%s' 'Очистить корзину' ;;
+
+		# Turkish
+		(tr_TR:YES) printf '%s' 'Evet' ;;
+		(tr_TR:NO) printf '%s' 'Hayır' ;;
+		(tr_TR:GO_UP) printf '%s' 'Üst dizin' ;;
+		(tr_TR:PASTE) printf '%s' 'Yapıştır' ;;
+		(tr_TR:SORT) printf '%s' 'Sırala' ;;
+		(tr_TR:NAME) printf '%s' 'Ad' ;;
+		(tr_TR:TIME) printf '%s' 'Tarih' ;;
+		(tr_TR:SIZE) printf '%s' 'Boyut' ;;
+		(tr_TR:NEW_FILE) printf '%s' 'Yeni dosya' ;;
+		(tr_TR:NEW_FOLDER) printf '%s' 'Yeni klasör' ;;
+		(tr_TR:CUT) printf '%s' 'Kes' ;;
+		(tr_TR:COPY) printf '%s' 'Kopyala' ;;
+		(tr_TR:MOVE) printf '%s' 'Taşı' ;;
+		(tr_TR:LINK) printf '%s' 'Bağlantı oluştur' ;;
+		(tr_TR:RENAME) printf '%s' 'Yeniden adlandır' ;;
+		(tr_TR:MOVE_TO_TRASH) printf '%s' 'Çöpe taşı' ;;
+		(tr_TR:EDIT) printf '%s' 'Düzenle' ;;
+		(tr_TR:RESTORE) printf '%s' 'Geri yükle' ;;
+		(tr_TR:EMPTY_TRASH) printf '%s' 'Çöpü boşalt' ;;
+
+		# Chinese (Simplified)
+		(zh_CN:YES) printf '%s' '是' ;;
+		(zh_CN:NO) printf '%s' '否' ;;
+		(zh_CN:GO_UP) printf '%s' '上一级' ;;
+		(zh_CN:PASTE) printf '%s' '粘贴' ;;
+		(zh_CN:SORT) printf '%s' '排序' ;;
+		(zh_CN:NAME) printf '%s' '名称' ;;
+		(zh_CN:TIME) printf '%s' '时间' ;;
+		(zh_CN:SIZE) printf '%s' '大小' ;;
+		(zh_CN:NEW_FILE) printf '%s' '新建文件' ;;
+		(zh_CN:NEW_FOLDER) printf '%s' '新建文件夹' ;;
+		(zh_CN:CUT) printf '%s' '剪切' ;;
+		(zh_CN:COPY) printf '%s' '复制' ;;
+		(zh_CN:MOVE) printf '%s' '移动' ;;
+		(zh_CN:LINK) printf '%s' '创建链接' ;;
+		(zh_CN:RENAME) printf '%s' '重命名' ;;
+		(zh_CN:MOVE_TO_TRASH) printf '%s' '移到回收站' ;;
+		(zh_CN:EDIT) printf '%s' '编辑' ;;
+		(zh_CN:RESTORE) printf '%s' '还原' ;;
+		(zh_CN:EMPTY_TRASH) printf '%s' '清空回收站' ;;
+
+		# Arabic (Saudi)
+		(ar_SA:YES) printf '%s' 'نعم' ;;
+		(ar_SA:NO) printf '%s' 'لا' ;;
+		(ar_SA:GO_UP) printf '%s' 'المجلد الأب' ;;
+		(ar_SA:PASTE) printf '%s' 'لصق' ;;
+		(ar_SA:SORT) printf '%s' 'فرز' ;;
+		(ar_SA:NAME) printf '%s' 'الاسم' ;;
+		(ar_SA:TIME) printf '%s' 'التاريخ' ;;
+		(ar_SA:SIZE) printf '%s' 'الحجم' ;;
+		(ar_SA:NEW_FILE) printf '%s' 'ملف جديد' ;;
+		(ar_SA:NEW_FOLDER) printf '%s' 'مجلد جديد' ;;
+		(ar_SA:CUT) printf '%s' 'قص' ;;
+		(ar_SA:COPY) printf '%s' 'نسخ' ;;
+		(ar_SA:MOVE) printf '%s' 'نقل' ;;
+		(ar_SA:LINK) printf '%s' 'إنشاء رابط' ;;
+		(ar_SA:RENAME) printf '%s' 'إعادة تسمية' ;;
+		(ar_SA:MOVE_TO_TRASH) printf '%s' 'نقل إلى سلة المهملات' ;;
+		(ar_SA:EDIT) printf '%s' 'تحرير' ;;
+		(ar_SA:RESTORE) printf '%s' 'استعادة' ;;
+		(ar_SA:EMPTY_TRASH) printf '%s' 'إفراغ سلة المهملات' ;;
+
+		# Fallback
+		(*) printf '%s' "$key" ;;
+	esac
+}
+
+UI_LANG=$(ui_lang_detect)
+
+L_YES=$(tr YES)
+L_NO=$(tr NO)
+L_GO_UP=$(tr GO_UP)
+L_PASTE=$(tr PASTE)
+L_SORT=$(tr SORT)
+L_NAME=$(tr NAME)
+L_TIME=$(tr TIME)
+L_SIZE=$(tr SIZE)
+L_NEW_FILE=$(tr NEW_FILE)
+L_NEW_FOLDER=$(tr NEW_FOLDER)
+L_CUT=$(tr CUT)
+L_COPY=$(tr COPY)
+L_MOVE=$(tr MOVE)
+L_LINK=$(tr LINK)
+L_RENAME=$(tr RENAME)
+L_MOVE_TO_TRASH=$(tr MOVE_TO_TRASH)
+L_EDIT=$(tr EDIT)
+L_RESTORE=$(tr RESTORE)
+L_EMPTY_TRASH=$(tr EMPTY_TRASH)
+# ---------------------------------------------------------------------------
+
+
 warn() {
 	printf '%s: %s\n' "${0##*/}" "$*" >&2
 }
 
-# print error message and exit
 err() {
 	warn "$@"
 	exit 1
 }
 
-# open mouse-based menu containing entries from stdin
 menu() {
 	xmenu
 }
 
-# open keyboard-based menu containing entries from stdin
-prompt() {
-	dmenu -w "$WINDOWID"
-}
-
-# open new xfiles window on current directory
-newwin() {
-	xfiles &
-}
-
-# open terminal window running given command
-term() {
-	xterm &
-}
-
-# open given files (on background, so xfiles not wait)
-open() {
-	command -- "$OPENER" "$@" &
-}
-
-# open text editor on given file
 edit() {
 	xterm -into "$WINDOWID" -bw 0 -e "$EDITOR" -- "$@"
 }
 
-# open dialog asking for confirmation ("$1" is the prompt, rest are filenames)
-dialog() {
-	"$ask" || return 0
-	prompt="$1"
-	shift 1
-	{
-		printf "%s\n" "$prompt"
-		printf "\t%s\n" "$@"
-	} | xmessage -buttons Yes:0,No:1 -nearmouse -file -
+asktext() {
+	label="$1"
+	tmp="${TMPDIR:-/tmp}/xfilesctl-input-$$"
+	rm -f -- "$tmp"
+	: > "$tmp" || return 1
+	xterm -into "$WINDOWID" -bw 0 -title "$label" -e "$EDITOR" -- "$tmp"
+	status=$?
+	if [ $status -ne 0 ]; then
+		rm -f -- "$tmp"
+		return 1
+	fi
+	value=$(sed -n '/^[[:space:]]*$/d; {p; q;}' "$tmp")
+	rm -f -- "$tmp"
+	printf '%s\n' "$value"
 }
 
-# if $1 == /path/to/file_1.txt exists, set $uniquepath to /path/to/file_2.txt and so on
+confirm() {
+	prompt="$1"
+	"$ask" || return 0
+		choice=$(printf '%s\n\t%s\n\t%s\n' "$prompt" "$L_YES" "$L_NO" | menu)
+	case "$choice" in
+	("$L_YES") return 0 ;;
+	(*) return 1 ;;
+	esac
+}
+
 setuniquepath() {
 	basename="${1##*/}"
 	dirname="${1%/*}"
 	body="${basename%.*}"
 	ext="${basename##"$body"}"
-
-	# create unique name
 	unset -v i p
 	while test -e "$dirname/$body$p$i$ext"
 	do
-		p="_"
-		if [ -z "$i" ]
-		then
-			i=1
-		else
-			i=$((i + 1))
-		fi
+		p="-"
+		if [ -z "$i" ]; then i=1; else i=$((i + 1)); fi
 	done
 	uniquepath="$dirname/$body$p$i$ext"
 }
 
-# copy files here if user confirms dialog
-copy() {
-	dialog "Copy files to $PWD?" "$@" && {
-		for file
-		do
-			setuniquepath "$PWD/${file##*/}"
-			cp -v "$file" "$uniquepath"
-		done
-	}
+save_clipboard_state() {
+	mkdir -p "$STATE_DIR" || return 1
+	: > "$STATE_FILE" || return 1
+	printf 'mode=%s\n' "$1" > "$STATE_FILE" || return 1
+	shift
+	for file; do printf '%s\n' "$file"; done >> "$STATE_FILE"
 }
 
-# move files here if user confirms dialog
-move() {
-	dialog "Move files to $PWD?" "$@" && {
-		for file
-		do
-			setuniquepath "$PWD/${file##*/}"
-			mv -v "$file" "$uniquepath"
-		done
-	}
+load_clipboard_state() {
+	clipboard_mode=
+	clipboard_paths=
+	[ -r "$STATE_FILE" ] || return 1
+	IFS= read -r first < "$STATE_FILE" || return 1
+	case "$first" in
+	(mode=*) clipboard_mode=${first#mode=} ;;
+	(*) return 1 ;;
+	esac
+	clipboard_paths=$(sed '1d' "$STATE_FILE")
+	return 0
 }
 
-# link files here if user confirms dialog
-link() {
-	dialog "Link files to $PWD?" "$@" && {
-		for file
-		do
-			setuniquepath "$PWD/${file##*/}"
-			ln -s "$file" "$uniquepath"
-		done
-	}
+copy_here() {
+	for file; do
+		setuniquepath "$PWD/${file##*/}"
+		cp -R -- "$file" "$uniquepath"
+	done
 }
 
-# send files to trash if user confirms dialog
+move_here() {
+	for file; do
+		setuniquepath "$PWD/${file##*/}"
+		mv -- "$file" "$uniquepath"
+	done
+}
+
+link_here() {
+	for file; do
+		setuniquepath "$PWD/${file##*/}"
+		ln -s -- "$file" "$uniquepath"
+	done
+}
+
+istrashdir() {
+	[ "$1" = "$TRASH_DIR" ]
+}
+
 trash() {
 	case $# in (0) return ;; esac
-	dialog "Send files to trash?" "$@" || return
-	# shellcheck disable=SC2174
-	mkdir -m 700 -p -- "$TRASH/files" "$TRASH/info" || exit 1
-	for file
-	do
+	mkdir -m 700 -p -- "$TRASH_DIR" "$TRASH_INFO_DIR" || exit 1
+	for file; do
 		test -e "$file" || continue
-
-		# get unique target
-		setuniquepath "$TRASH/files/${file##*/}"
-
-		# move file to trash and write trash information
+		istrashdir "$file" && continue
+		setuniquepath "$TRASH_DIR/${file##*/}"
 		mv -- "$file" "$uniquepath" && \
-		cat > "$TRASH/info/${uniquepath##*/}.trashinfo" <<-END
-			[Trash Info]
-			Path=$file
-			DeletionDate=$(date +"%FT%H:%M:%S")
-		END
+		cat > "$TRASH_INFO_DIR/${uniquepath##*/}.trashinfo" <<EOF
+[Trash Info]
+Path=$file
+DeletionDate=$(date +"%FT%H:%M:%S")
+EOF
 	done
 }
 
-# restore files from trash if user confirms dialog
-untrash() {
+restore() {
 	case $# in (0) return ;; esac
-
-	# compose dialog message
-	msg="Restore files from trash?"
-	for file
-	do
-		shift
+	for file; do
 		basename="${file##*/}"
-		infofile="$TRASH/info/$basename.trashinfo"
+		infofile="$TRASH_INFO_DIR/$basename.trashinfo"
 		origfile="$(sed -En '/^[[:blank:]]*Path[[:blank:]]*=/{s/.*=[[:blank:]]*//;p;q;}' < "$infofile")"
-		if test -e "$origfile"
-		then
+		test -n "$origfile" || continue
+		if test -e "$origfile"; then
 			warn "$basename: file already exists on original directory"
-		else
-			set -- "$file" "$origfile" "$infofile"
-			msg="$msg
-	$origfile"
+			continue
 		fi
-	done
-
-	dialog "$msg" || return
-
-	while test $# -gt 0
-	do
-		file="$1"
-		origfile="$2"
-		infofile="$3"
-		shift 3
-		mv -- "$file" "$origfile" && rm -- "$infofile"
+		case "$origfile" in (*/*) mkdir -p -- "${origfile%/*}" || continue ;; esac
+		mv -- "$file" "$origfile" && rm -f -- "$infofile"
 	done
 }
 
-# rm file if user confirms dialog (if at trash, also remove info file)
-delete() {
-	dialog "Delete files permanently?" "$@" || return
-	rm -rf -- "$@"
-	case "$PWD" in
-	("$TRASH/files")
-		for file
-		do
-			rm -rf -- "$TRASH/info/${file##*/}.trashinfo"
-		done
-		;;
-	esac
-}
-
-# delete all files in trash can
 emptytrash() {
-	dialog "Empty trash?" || return
-	rm -rf "$TRASH/files/"*
-	rm -rf "$TRASH/info/"*
+	mkdir -m 700 -p -- "$TRASH_DIR" "$TRASH_INFO_DIR" || return 1
+	find "$TRASH_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+	find "$TRASH_INFO_DIR" -mindepth 1 -maxdepth 1 -exec rm -f -- {} +
 }
 
-# save file paths into clipboard
-snarf() {
-	case "$#" in
-	(0)
-		# no file to copy
-		return
-		;;
-	esac
-	# send URIs to clipboard
-	printf 'file://%s\r\n' "$@" |\
-	xclip -selection clipboard -in -target "text/uri-list" &
-}
+copyclip() { case $# in (0) return ;; esac; save_clipboard_state copy "$@" || return; }
+cutclip() { case $# in (0) return ;; esac; save_clipboard_state cut "$@" || return; }
 
-# paste file whose paths are on clipboard
 paste() {
-	cmd="$1"
-	shift 1
-	{
-		# get URIs from clipboard
-		xclip -selection clipboard -out -target "text/uri-list"
-		echo
-	} | sed 's,^file://,,' | tr -d '\r' | {
-		set --
-		while read -r f
-		do
-			case "$f" in
-			("")
-				;;
-			(*)
-				set -- "$@" "$f"
-				;;
-			esac
-		done
-		case "$cmd" in
-		("cp")
-			copy "$@"
-			;;
-		("mv")
-			move "$@"
-			;;
-		("ln")
-			link "$@"
-			;;
+	set --
+	if load_clipboard_state; then
+		while IFS= read -r f; do [ -n "$f" ] && set -- "$@" "$f"; done <<EOF
+$clipboard_paths
+EOF
+		case "$clipboard_mode" in
+		(cut) move_here "$@" ;;
+		(copy) copy_here "$@" ;;
 		esac
-	}
+	fi
 }
 
-# rename files in text editor
 rename() {
-	case "$#" in (0) return ;; esac
-
+	case "$#" in
+	(0) return ;;
+	(1) istrashdir "$1" && return ;;
+	esac
 	unset -v tempfile tempdir TMPDIR
 	trap '
 		test "$tempfile" && rm -f -- "$tempfile" 2>/dev/null
@@ -276,318 +491,145 @@ rename() {
 	' EXIT HUP
 	tempfile="$(mktemp)" || exit 1
 	tempdir="$(mktemp -d -p "$PWD")" || exit 1
-
-	for file
-	do
+	for file; do
 		file="${file#"$PWD/"}"
 		case "$file" in
-		("")
-			err "empty argument"
-			;;
-		(*[[:cntrl:]]*)
-			err "renaming files containing control characters is not supported"
-			;;
-		([[:space:]]*|*[[:space:]])
-			err "renaming files beginning or ending in space is not supported"
-			;;
+		("") err "empty argument" ;;
+		(*[[:cntrl:]]*) err "renaming files containing control characters is not supported" ;;
+		([[:space:]]*|*[[:space:]]) err "renaming files beginning or ending in space is not supported" ;;
 		esac
-		printf "%s\n" "$file" >> "$tempfile"
+		printf '%s\n' "$file" >> "$tempfile"
 	done
-
 	edit "$tempfile" || exit 1
-
 	mv -- "$@" "$tempdir" || exit 1
-	while read -r target
-	do
+	while read -r target; do
 		source="$tempdir/${1##*/}"
-		if test -z "$target"
-		then
+		if test -z "$target"; then
 			trash "$source"
 		else
-			case "$target" in
-			(*/*)
-				mkdir -p "${target%/*}"
-				;;
-			esac
-			case "$target" in
-			(/*|./*|../*)
-				;;
-			(*)
-				target="$PWD/$target"
-				;;
-			esac
+			case "$target" in (*/*) mkdir -p -- "${target%/*}" ;; esac
+			case "$target" in (/*|./*|../*) ;; (*) target="$PWD/$target" ;; esac
 			setuniquepath "$target"
 			mv -- "$source" "$uniquepath"
 		fi
 		shift
-	done <"$tempfile"
-	{
-		mv -- "$tempdir/"* ./
-		rmdir -- "$tempdir"
-		rm -f -- "$tempfile"
-	} 2>/dev/null
+	done < "$tempfile"
+	{ mv -- "$tempdir/"* ./; rmdir -- "$tempdir"; rm -f -- "$tempfile"; } 2>/dev/null
 }
 
-# create directories named on text editor
-makedir() {
-	unset -v tempfile
-	trap 'test "$tempfile" && rm -f -- "$tempfile" 2>/dev/null' EXIT
-	tempfile="$(mktemp)" || exit 1
-	edit "$tempfile"
-	while read -r dir
-	do
-		mkdir -p "$dir"
-	done <"$tempfile"
-	rm "$tempfile"
+newfile() {
+	name=$(asktext "$L_NEW_FILE") || return
+	[ -n "$name" ] || return
+	case "$name" in (*/*) return ;; esac
+	setuniquepath "$PWD/$name"
+	: > "$uniquepath"
 }
 
-# open random file in current directory
-random() {
-	set --
-	for file in *
-	do
-		test -f "$file" && set -- "$file" "$@"
-	done
-	case "$#" in
-	(0)
-		return
-		;;
-	(*)
-		shift "$(awk 'BEGIN{print int(ARGV[1]*rand())}' "$#")"
-		open "$1"
-		;;
+newfolder() {
+	name=$(asktext "$L_NEW_FOLDER") || return
+	[ -n "$name" ] || return
+	case "$name" in (*/*) return ;; esac
+	setuniquepath "$PWD/$name"
+	mkdir -p -- "$uniquepath"
+}
+
+sortby() {
+	choice="$1"
+	[ -n "$choice" ] || return
+	xprop -id "$WINDOWID" -format "_CONTROL_SORTBY" 8u -set "_CONTROL_SORTBY" "$choice" >/dev/null 2>&1
+}
+
+changedir() {
+	xprop -id "$WINDOWID" -format "_CONTROL_GOTO" 8u -set "_CONTROL_GOTO" "$1" >/dev/null 2>&1
+}
+
+dropmenu() {
+	option=$(printf '%s\n%s\n%s\n' "$L_COPY" "$L_MOVE" "$L_LINK" | menu)
+	case "$option" in
+	("$L_COPY") copy_here "$@" ;;
+	("$L_MOVE") move_here "$@" ;;
+	("$L_LINK") link_here "$@" ;;
 	esac
 }
 
-# change current directory of XFiles window
-changedir() {
-	xprop -id "$WINDOWID" -format "_CONTROL_GOTO" 8u -set "_CONTROL_GOTO" "$1"
-}
-
-# prompt for file to open or directory to go to
-urlbar() {
-	printf '%s\n' * | prompt | {
-		read -r entry
-		if test -d "$entry"
-		then
-			changedir "$entry"
-		else
-			open "$entry"
-		fi
-	}
-}
-
-# pop-up menu for file dropping
-dropmenu() {
-	{
-		cat <<-EOF
-		copy
-		move
-		link
-		none
-		EOF
-	} | menu | {
-		read -r option
-		case "$option" in
-		("copy")
-			copy "$@"
-			;;
-		("move")
-			move "$@"
-			;;
-		("link")
-			link "$@"
-			;;
-		("term")
-			term
-			;;
-		esac
-	}
-}
-
-# context menu for no selection
 dirmenu() {
-	{
-		cat <<EOF
-paste
-	copy
-	move
-	link
-go up
-open
-	xfiles
-	term
-	random
-$(case "$PWD" in ("$TRASH/files") printf 'empty trash' ;; (*) printf 'trash can' ;; esac)
+	option=$(cat <<EOF | menu
+$L_GO_UP
+
+$L_PASTE
+$L_SORT
+	$L_NAME
+	$L_TIME
+	$L_SIZE
+$L_NEW_FILE
+$L_NEW_FOLDER
 EOF
-	} | menu | {
-		read -r option
-		case "$option" in
-		("go up")
-			changedir ".."
-			;;
-		("go home")
-			changedir "$HOME"
-			;;
-		("go prev")
-			changedir "-"
-			;;
-		("go next")
-			changedir "+"
-			;;
-		("copy")
-			paste "cp" "$@"
-			;;
-		("move")
-			paste "mv" "$@"
-			;;
-		("link")
-			paste "ln" "$@"
-			;;
-		("empty trash")
-			emptytrash
-			;;
-		("trash can")
-			changedir "$TRASH/files"
-			;;
-		("random")
-			random
-			;;
-		("term")
-			term
-			;;
-		("xfiles")
-			newwin
-			;;
-		esac
-	}
+)
+	case "$option" in
+	("$L_GO_UP") changedir ".." ;;
+	("$L_PASTE") paste ;;
+	("$L_NAME") sortby name ;;
+	("$L_TIME") sortby time ;;
+	("$L_SIZE") sortby size ;;
+	("$L_NEW_FILE") newfile ;;
+	("$L_NEW_FOLDER") newfolder ;;
+	esac
 }
 
-# context menu for selected files
 filemenu() {
-	case "$PWD" in
-	("$TRASH/files")
-		cat <<-EOF
-		untrash
-		delete
-		EOF
+	if [ "$#" -eq 1 ] && istrashdir "$1"; then
+		option=$(printf '%s\n' "$L_EMPTY_TRASH" | menu)
+		case "$option" in ("$L_EMPTY_TRASH") emptytrash ;; esac
+		return
+	fi
+	option=$(case "$PWD" in
+	("$TRASH_DIR") cat <<EOF
+$L_COPY
+$L_RESTORE
+EOF
 		;;
-	(*)
-		cat <<-EOF
-		rename
-		snarf
-		trash
-		edit
-		EOF
+	(*) cat <<EOF
+$L_CUT
+$L_COPY
+$L_RENAME
+$L_MOVE_TO_TRASH
+$L_EDIT
+EOF
 		;;
-	esac | menu | {
-		read -r option
-		case "$option" in
-		("rename")
-			rename "$@"
-			;;
-		("snarf")
-			snarf "$@"
-			;;
-		("delete")
-			delete "$@"
-			;;
-		("trash")
-			trash "$@"
-			;;
-		("untrash")
-			untrash "$@"
-			;;
-		("edit")
-			edit "$1" &
-			;;
-		esac
-	}
+	esac | menu)
+	case "$option" in
+	("$L_CUT") cutclip "$@" ;;
+	("$L_COPY") copyclip "$@" ;;
+	("$L_RENAME") rename "$@" ;;
+	("$L_MOVE_TO_TRASH") trash "$@" ;;
+	("$L_RESTORE") restore "$@" ;;
+	("$L_EDIT") edit "$1" & ;;
+	esac
 }
 
 operation="$1"
 shift 1
-for file
-do
+for file; do
 	shift 1
 	case "$file" in
-	("")
-		# ignore empty arguments
-		continue
-		;;
-	([!/]*)
-		file="$PWD/$file"
-		;;
+	("") continue ;;
+	([!/]* ) file="$PWD/$file" ;;
 	esac
 	set -- "$@" "$file"
 done
 case "$operation" in
-("menu")
-	case "$#" in
-	(0)
-		# right click on empty area; create a menu
-		dirmenu "$@"
-		;;
-	(*)
-		# right click on files; create a menu
-		filemenu "$@"
-		;;
-	esac
-	;;
-("drop-ask")
-	# droped something; create a menu
-	dropmenu "$@"
-	;;
-("drop-copy")
-	# copy dropped files here
-	copy "$@"
-	;;
-("drop-move")
-	# move dropped files here
-	move "$@"
-	;;
-("drop-link")
-	# link dropped files here
-	link "$@"
-	;;
-(^BackSpace)
-	# go up
-	changedir ".."
-	;;
-(^F2)
-	# rename files on text editor
-	rename "$@"
-	;;
-(^F5|^[Rr])
-	# cd to where we are just to refresh
-	changedir "."
-	;;
-(^[LlGg])
-	# open URL bar to go somewhere or open something
-	urlbar
-	;;
-(^[Cc])
-	# snarf files
-	snarf "$@"
-	;;
-(^[Pp])
-	# move snarfed files
-	paste "mv"
-	;;
-(^[Vv])
-	# copy snarfed files
-	paste "cp"
-	;;
+("menu") case "$#" in (0) dirmenu "$@" ;; (*) filemenu "$@" ;; esac ;;
+("drop-ask") case "$PWD" in ("$TRASH_DIR") trash "$@" ;; (*) dropmenu "$@" ;; esac ;;
+("drop-copy") case "$PWD" in ("$TRASH_DIR") trash "$@" ;; (*) copy_here "$@" ;; esac ;;
+("drop-move") case "$PWD" in ("$TRASH_DIR") trash "$@" ;; (*) move_here "$@" ;; esac ;;
+("drop-link") case "$PWD" in ("$TRASH_DIR") trash "$@" ;; (*) link_here "$@" ;; esac ;;
+(^BackSpace) changedir ".." ;;
+(^F2) rename "$@" ;;
+(^F5|^[Rr]) changedir "." ;;
+(^[Cc]) copyclip "$@" ;;
+(^[Xx]) cutclip "$@" ;;
+(^[Pp]|^[Vv]) paste ;;
 (^Delete)
-	case "$PWD" in
-	("$TRASH/files")
-		# delete files from trash
-		delete "$@"
-		;;
-	(*)
-		# send files to trash
-		trash "$@"
-		;;
-	esac
+	case "$PWD" in ("$TRASH_DIR") restore "$@" ;; (*) trash "$@" ;; esac
 	;;
 esac

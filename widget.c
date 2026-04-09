@@ -49,7 +49,9 @@
 	X(_XEMBED, NULL)                        \
 	X(_CONTROL_STATUS, NULL)                \
 	X(_CONTROL_CWD, NULL)                   \
-	X(_CONTROL_GOTO, NULL)
+	X(_CONTROL_GOTO, NULL)                   \
+	X(_CONTROL_SORTBY, NULL)                 \
+	X(_CONTROL_REFRESH, NULL)
 
 #define RESOURCES                                             \
 	/*            CLASS               NAME             */ \
@@ -57,6 +59,7 @@
 	X(FACE_NAME, "FaceName",         "faceName")          \
 	X(FACE_SIZE, "FaceSize",         "faceSize")          \
 	X(ICONS,     "FileIcons",        "fileIcons")         \
+	X(SORTBY,    "SortBy",           "sortBy")            \
 	X(NORMAL_BG, "Background",       "background")        \
 	X(NORMAL_FG, "Foreground",       "foreground")        \
 	X(SELECT_BG, "ActiveBackground", "activeBackground")  \
@@ -208,6 +211,7 @@ struct Widget {
 	const char **cliresources;
 
 	char *gototext;
+	char *sortby;
 	char ksymbuf[64];               /* buffer where the keysym passed to xfilesctl is held */
 
 	struct {
@@ -1771,6 +1775,7 @@ cleanwidget(Widget *widget)
 	widget->rectsel = NULL;
 #define FREE(x) (free(x), x = NULL)
 	FREE(widget->gototext);
+	FREE(widget->sortby);
 	FREE(widget->thumbs);
 	FREE(widget->linelen);
 	FREE(widget->nlines);
@@ -2499,6 +2504,7 @@ enum events {
 	 */
 	CloseNotify     = 0,
 	TimeoutNotify   = 1,
+	RefreshNotify   = LASTEvent + 1,
 };
 
 static WidgetEvent
@@ -2762,6 +2768,10 @@ filter_event(Widget *widget, XEvent *ev)
 	case ClientMessage:
 		if (ev->xclient.window != widget->window)
 			return False;
+		if (ev->xclient.message_type == atoms[_CONTROL_REFRESH]) {
+			ev->type = RefreshNotify;
+			return False;
+		}
 		if (ev->xclient.message_type != atoms[WM_PROTOCOLS])
 			return False;
 		if ((Atom)ev->xclient.data.l[0] != atoms[WM_DELETE_WINDOW])
@@ -2812,6 +2822,16 @@ close:
 				widget,
 				widget->window,
 				atoms[_CONTROL_GOTO],
+				True
+			);
+		}
+		if (ev->xproperty.window == widget->window &&
+		    ev->xproperty.atom == atoms[_CONTROL_SORTBY]) {
+			free(widget->sortby);
+			widget->sortby = gettextprop(
+				widget,
+				widget->window,
+				atoms[_CONTROL_SORTBY],
 				True
 			);
 		}
@@ -3056,7 +3076,11 @@ dragmode(Widget *widget, Time timestamp, int index, int *selitems, int *nitems)
 	/* user dropped items on widget's own window */
 	index = getitemundercursor(widget, drop.x, drop.y);
 	highlight(widget, index);
-	if (index < 1 || index >= widget->nitems)
+	/*
+	 * Allow dropping on the synthetic ".." entry as well, so dragging
+	 * files onto it can target the parent directory.
+	 */
+	if (index < 0 || index >= widget->nitems)
 		return WIDGET_NONE;
 	if (widget->issel[index] != NULL)
 		return WIDGET_NONE;     /* dont drop item on itself */
@@ -3144,9 +3168,17 @@ mainmode(Widget *widget, int *selitems, int *nitems, char **text)
 	for (;;) switch (nextevent(widget, &ev, 0)) {
 	case CloseNotify:
 		return WIDGET_CLOSE;
+	case RefreshNotify:
+		return WIDGET_REFRESH;
 	case PropertyNotify:
+		if (widget->sortby != NULL) {
+			*text = widget->sortby;
+			widget->sortby = NULL;
+			return WIDGET_SORTBY;
+		}
 		if (widget->gototext != NULL) {
 			*text = widget->gototext;
+			widget->gototext = NULL;
 			return WIDGET_GOTO;
 		}
 		continue;
@@ -3842,6 +3874,12 @@ widget_map(Widget *widget)
 	XMapWindow(widget->display, widget->window);
 }
 
+unsigned long
+widget_window(Widget *widget)
+{
+	return (unsigned long)widget->window;
+}
+
 char *
 widget_geticons(Widget *widget)
 {
@@ -3866,6 +3904,30 @@ widget_geticons(Widget *widget)
 	return p;
 }
 
+char *
+widget_get_sortby(Widget *widget)
+{
+	XrmDatabase xdb;
+	char *str, *value, *p;
+
+	str = XResourceManagerString(widget->display);
+	if ((xdb = loadxdb(widget, str)) == NULL)
+		return NULL;
+	value = getresource(
+		xdb,
+		widget->application.class,
+		widget->application.name,
+		widget->resources[SORTBY].class,
+		widget->resources[SORTBY].name
+	);
+	if (value == NULL)
+		p = NULL;
+	else
+		p = strdup(value);
+	XrmDestroyDatabase(xdb);
+	return p;
+}
+
 WidgetEvent
 widget_poll(Widget *widget, int *selitems, int *nitems, Scroll *scrl, char **text)
 {
@@ -3874,8 +3936,14 @@ widget_poll(Widget *widget, int *selitems, int *nitems, Scroll *scrl, char **tex
 	*text = NULL;
 	*nitems = 0;
 	retval = widget_wait(widget);
+	if (widget->sortby != NULL) {
+		*text = widget->sortby;
+		widget->sortby = NULL;
+		return WIDGET_SORTBY;
+	}
 	if (widget->gototext != NULL) {
 		*text = widget->gototext;
+		widget->gototext = NULL;
 		return WIDGET_GOTO;
 	}
 	if (retval == WIDGET_CLOSE || retval == WIDGET_ERROR)
