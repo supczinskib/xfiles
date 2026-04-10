@@ -2193,6 +2193,7 @@ endevent(Widget *widget)
 	if (widget->redraw) {
 		if (XPending(widget->display) > 0)
 			return;
+		widget->redraw = False;
 		commitdraw(widget);
 	}
 }
@@ -2818,7 +2819,6 @@ filter_event(Widget *widget, XEvent *ev)
 	XWindowAttributes wattr;
 	int newrow;
 
-	widget->redraw = False;
 	switch (ev->type) {
 	case MotionNotify:
 		compress_motion(widget->display, ev);
