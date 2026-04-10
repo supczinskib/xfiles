@@ -555,7 +555,6 @@ dropmenu() {
 dirmenu() {
 	option=$(cat <<EOF | menu
 $L_GO_UP
-
 $L_PASTE
 $L_SORT
 	$L_NAME
