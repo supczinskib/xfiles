@@ -435,6 +435,58 @@ resetlayer(Widget *widget, enum Layer layer, int width, int height)
 }
 
 static void
+resetlayerpreserve(Widget *widget, enum Layer layer, int width, int height, int oldw, int oldh)
+{
+	Pixmap oldpix;
+	Picture oldpict;
+	int copyw, copyh;
+	Bool isalpha = (layer == LAYER_SELALPHA || layer == LAYER_RECTALPHA);
+
+	oldpix = widget->layers[layer].pix;
+	oldpict = widget->layers[layer].pict;
+	widget->layers[layer].pix = XCreatePixmap(
+		widget->display,
+		widget->window,
+		width,
+		height,
+		isalpha ? 8 : widget->depth
+	);
+	widget->layers[layer].pict = XRenderCreatePicture(
+		widget->display,
+		widget->layers[layer].pix,
+		isalpha ? widget->alpha_format : widget->format,
+		0,
+		NULL
+	);
+	XRenderFillRectangle(
+		widget->display,
+		PictOpClear,
+		widget->layers[layer].pict,
+		&(XRenderColor){ 0 },
+		0, 0, width, height
+	);
+	copyw = min(width, oldw);
+	copyh = min(height, oldh);
+	if (oldpict != None && copyw > 0 && copyh > 0) {
+		XRenderComposite(
+			widget->display,
+			PictOpSrc,
+			oldpict,
+			None,
+			widget->layers[layer].pict,
+			0, 0,
+			0, 0,
+			0, 0,
+			copyw, copyh
+		);
+	}
+	if (oldpict != None)
+		XRenderFreePicture(widget->display, oldpict);
+	if (oldpix != None)
+		XFreePixmap(widget->display, oldpix);
+}
+
+static void
 setfont(Widget *widget, const char *facename, double fontsize)
 {
 	CtrlFontSet *fontset;
@@ -828,6 +880,7 @@ static int
 calcsize(Widget *widget, int w, int h)
 {
 	int old_ncols, old_nrows, ret;
+	int old_winw, old_winh, old_pixw, old_pixh, old_statush;
 	int ncols, nrows;
 	int nrows_in_window;
 	int nrows_in_dir;
@@ -841,6 +894,11 @@ calcsize(Widget *widget, int w, int h)
 	etlock(&widget->lock);
 	old_ncols = widget->ncols;
 	old_nrows = widget->nrows;
+	old_winw = widget->winw;
+	old_winh = widget->winh;
+	old_pixw = widget->pixw;
+	old_pixh = widget->pixh;
+	old_statush = STATUSBAR_HEIGHT(widget);
 	if (w > 0 && h > 0) {
 		widget->winw = w;
 		widget->winh = h;
@@ -872,13 +930,18 @@ calcsize(Widget *widget, int w, int h)
 	if (old_ncols != widget->ncols || old_nrows != widget->nrows) {
 		widget->pixw = widget->ncols * widget->itemw;
 		widget->pixh = widget->nrows * widget->itemh;
-		resetlayer(widget, LAYER_ICONS, widget->pixw, widget->pixh);
-		resetlayer(widget, LAYER_SELALPHA, widget->pixw, widget->pixh);
+		if (old_ncols == widget->ncols) {
+			resetlayerpreserve(widget, LAYER_ICONS, widget->pixw, widget->pixh, old_pixw, old_pixh);
+			resetlayerpreserve(widget, LAYER_SELALPHA, widget->pixw, widget->pixh, old_pixw, old_pixh);
+		} else {
+			resetlayer(widget, LAYER_ICONS, widget->pixw, widget->pixh);
+			resetlayer(widget, LAYER_SELALPHA, widget->pixw, widget->pixh);
+		}
 		ret = True;
 	}
 	resetlayer(widget, LAYER_RECTALPHA, widget->w, widget->h);
-	resetlayer(widget, LAYER_STATUSBAR, widget->winw, STATUSBAR_HEIGHT(widget));
-	resetlayer(widget, LAYER_CANVAS, widget->winw, widget->winh);
+	resetlayerpreserve(widget, LAYER_STATUSBAR, widget->winw, STATUSBAR_HEIGHT(widget), old_winw, old_statush);
+	resetlayerpreserve(widget, LAYER_CANVAS, widget->winw, widget->winh, old_winw, old_winh);
 	embed_resize(widget);
 	etunlock(&widget->lock);
 	return ret;
@@ -1353,6 +1416,39 @@ drawitems(Widget *widget)
 	);
 	n = lastvisible(widget);
 	for (i = widget->row * widget->ncols; i <= n; i++) {
+		drawitem(widget, i);
+	}
+}
+
+static void
+drawitemsappended(Widget *widget, int startrow)
+{
+	int i, n, y, h;
+
+	if (startrow < 0)
+		startrow = 0;
+	if (startrow >= widget->nrows)
+		return;
+	y = startrow * widget->itemh;
+	h = widget->pixh - y;
+	if (h <= 0)
+		return;
+	XRenderFillRectangle(
+		widget->display,
+		PictOpClear,
+		widget->layers[LAYER_ICONS].pict,
+		&(XRenderColor){ 0 },
+		0, y, widget->pixw, h
+	);
+	XRenderFillRectangle(
+		widget->display,
+		PictOpClear,
+		widget->layers[LAYER_SELALPHA].pict,
+		&(XRenderColor){ 0 },
+		0, y, widget->pixw, h
+	);
+	n = lastvisible(widget);
+	for (i = (widget->row + startrow) * widget->ncols; i <= n; i++) {
 		drawitem(widget, i);
 	}
 }
@@ -2374,10 +2470,14 @@ createwindow(Widget *widget, Window parent, XRectangle rect, long eventmask, Boo
 		InputOutput,
 		widget->visual,
 		CWOverrideRedirect | CWEventMask | CWColormap |
-		CWBackPixel | CWBorderPixel,
+		CWBackPixel | CWBorderPixel | CWBitGravity |
+		CWWinGravity | CWBackingStore,
 		&(XSetWindowAttributes){
 			.border_pixel = 0,
 			.background_pixel = 0,
+			.bit_gravity = NorthWestGravity,
+			.win_gravity = NorthWestGravity,
+			.backing_store = WhenMapped,
 			.colormap = widget->colormap,
 			.event_mask = eventmask,
 			.override_redirect = override,
@@ -2787,30 +2887,60 @@ compress_motion(Display *display, XEvent *event)
 		*event = next;
 }
 
-static void
-compress_expose(Display *display, XEvent *event)
-{
-	XEvent next;
+struct ResizeDrain {
 	Window window;
+};
 
-	if (event->type != Expose)
-		return;
-	window = event->xexpose.window;
-	while (XCheckTypedWindowEvent(display, window, Expose, &next))
-		*event = next;
+static Bool
+is_resize_event(Display *display, XEvent *event, XPointer arg)
+{
+	struct ResizeDrain *drain = (struct ResizeDrain *)arg;
+	(void)display;
+	if (event->type == ConfigureNotify)
+		return event->xconfigure.window == drain->window;
+	if (event->type == Expose)
+		return event->xexpose.window == drain->window;
+	return False;
 }
 
 static void
-compress_configure(Display *display, XEvent *event)
+drain_resize_events(Widget *widget, XEvent *event)
 {
+	struct ResizeDrain drain;
 	XEvent next;
+	XEvent lastcfg;
+	Bool have_cfg;
 	Window window;
 
-	if (event->type != ConfigureNotify)
+	if (event->type == ConfigureNotify)
+		window = event->xconfigure.window;
+	else if (event->type == Expose)
+		window = event->xexpose.window;
+	else
 		return;
-	window = event->xconfigure.window;
-	while (XCheckTypedWindowEvent(display, window, ConfigureNotify, &next))
-		*event = next;
+
+	drain.window = window;
+	have_cfg = (event->type == ConfigureNotify);
+	if (have_cfg)
+		lastcfg = *event;
+
+	/*
+	 * Pull everything the server has already queued for us and then drop
+	 * every stale Expose/ConfigureNotify for this window, keeping only the
+	 * newest ConfigureNotify.  This is stricter than XCheckTypedWindowEvent()
+	 * because resize traffic can be interleaved with other event types.
+	 */
+	XSync(widget->display, False);
+	while (XCheckIfEvent(widget->display, &next, is_resize_event, (XPointer)&drain)) {
+		if (next.type == ConfigureNotify) {
+			lastcfg = next;
+			have_cfg = True;
+		}
+	}
+	if (have_cfg)
+		*event = lastcfg;
+	else
+		event->type = Expose;
 }
 
 static Bool
@@ -2893,14 +3023,26 @@ close:
 	case Expose:
 		if (ev->xexpose.window != widget->window)
 			break;
-		compress_expose(widget->display, ev);
+		drain_resize_events(widget, ev);
 		widget->redraw = True;
 		break;
-case ConfigureNotify:
+case ConfigureNotify: {
+		int old_ncols, old_nrows, old_row, old_ydiff;
+		Bool resized;
+
 		if (ev->xconfigure.window != widget->window)
 			break;
-		compress_configure(widget->display, ev);
-		if (calcsize(widget, ev->xconfigure.width, ev->xconfigure.height)) {
+		old_ncols = widget->ncols;
+		old_nrows = widget->nrows;
+		old_row = widget->row;
+		old_ydiff = widget->ydiff;
+		drain_resize_events(widget, ev);
+		if (ev->type != ConfigureNotify) {
+			widget->redraw = True;
+			break;
+		}
+		resized = calcsize(widget, ev->xconfigure.width, ev->xconfigure.height);
+		if (resized) {
 			if (widget->highlight < 0) {
 				setrow(widget, 0);
 			} else {
@@ -2908,11 +3050,16 @@ case ConfigureNotify:
 				newrow = min(newrow, widget->nscreens - 1);
 				setrow(widget, newrow);
 			}
-			drawitems(widget);
+			if (old_ncols != widget->ncols || old_row != widget->row || old_ydiff != widget->ydiff) {
+				drawitems(widget);
+			} else if (widget->nrows > old_nrows) {
+				drawitemsappended(widget, old_nrows);
+			}
 		}
 		drawstatusbar(widget);
 		widget->redraw = True;
 		break;
+	}
 	case PropertyNotify:
 		if (ev->xproperty.state != PropertyNewValue)
 			return False;
