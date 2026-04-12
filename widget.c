@@ -186,6 +186,7 @@ struct Widget {
 	GC gc;
 	Cursor busycursor;
 	Window window, root, child;
+	Window contentwin, scrollbarwin, statuswin;
 	struct {
 		XRenderColor chans;
 		Pixmap pix;
@@ -344,6 +345,18 @@ struct Widget {
 	Bool statusdirty;
 };
 
+static unsigned int
+statusbar_height_px(const struct Widget *widget)
+{
+	return widget->fonth > 0 ? (unsigned int)(widget->fonth * 2) : 24U;
+}
+
+static unsigned int
+statusbar_margin_px(const struct Widget *widget)
+{
+	return widget->fonth > 0 ? (unsigned int)(widget->fonth / 2) : 6U;
+}
+
 struct Options {
 	const char *class;
 	const char *name;
@@ -369,6 +382,12 @@ static void setscrolloffset(Widget *widget, int offset);
 static int getscrollbartrackh(Widget *widget);
 static int getscrollbarx(Widget *widget);
 static int getscrollbarhandleh(Widget *widget);
+static void layoutsubwindows(Widget *widget);
+static Bool iswidgetwindow(Widget *widget, Window window);
+static Bool iscontentwindow(Widget *widget, Window window);
+static Bool isscrollbarwindow(Widget *widget, Window window);
+static Bool isstatuswindow(Widget *widget, Window window);
+static Bool isinternalwindow(Widget *widget, Window window);
 static int getscrollbarhandley(Widget *widget);
 static void drawscrollbar(Widget *widget);
 static Bool isonscrollbar(Widget *widget, int x, int y);
@@ -586,6 +605,14 @@ setwindowbg(Widget *widget)
 	if (XAllocColor(widget->display, widget->colormap, &color)) {
 		widget->bgpixel = color.pixel;
 		XSetWindowBackground(widget->display, widget->window, widget->bgpixel);
+		if (widget->contentwin != None)
+			XSetWindowBackground(widget->display, widget->contentwin, widget->bgpixel);
+		if (widget->scrollbarwin != None)
+			XSetWindowBackground(widget->display, widget->scrollbarwin, widget->bgpixel);
+		if (widget->statuswin != None)
+			XSetWindowBackground(widget->display, widget->statuswin, widget->bgpixel);
+		if (widget->scroller != None)
+			XSetWindowBackground(widget->display, widget->scroller, widget->bgpixel);
 	}
 }
 
@@ -661,7 +688,7 @@ drawstatusbar(Widget *widget)
 		PictOpClear,
 		widget->layers[LAYER_STATUSBAR].pict,
 		&(XRenderColor){ 0 },
-		0, 0, widget->winw, STATUSBAR_HEIGHT(widget)
+		0, 0, widget->winw, statusbar_height_px(widget)
 	);
 
 	/* draw item counter */
@@ -677,15 +704,15 @@ drawstatusbar(Widget *widget)
 		widget->layers[LAYER_STATUSBAR].pict,
 		widget->colors[SELECT_NOT][COLOR_FG].pict,
 		(XRectangle){
-			.x = STATUSBAR_MARGIN(widget),
-			.y = STATUSBAR_MARGIN(widget),
+			.x = statusbar_margin_px(widget),
+			.y = statusbar_margin_px(widget),
 			.width = widget->w,
 			.height = widget->fonth,
 		},
 		countstr,
 		strlen(countstr)
 	);
-	countwid += STATUSBAR_MARGIN(widget);
+	countwid += statusbar_margin_px(widget);
 
 	/* draw name of highlighted item */
 	if (widget->highlight > 0) {
@@ -694,8 +721,8 @@ drawstatusbar(Widget *widget)
 			widget->layers[LAYER_STATUSBAR].pict,
 			widget->colors[SELECT_NOT][COLOR_FG].pict,
 			(XRectangle){
-				.x = STATUSBAR_MARGIN(widget) + countwid,
-				.y = STATUSBAR_MARGIN(widget),
+				.x = statusbar_margin_px(widget) + countwid,
+				.y = statusbar_margin_px(widget),
 				.width = widget->w,
 				.height = widget->fonth,
 			},
@@ -714,14 +741,14 @@ drawstatusbar(Widget *widget)
 	(void)snprintf(scrollstr, LEN(scrollstr), "[%d%%]", scrollpct);
 	scrolllen = strlen(scrollstr);
 	scrollwid = ctrlfnt_width(widget->fontset, scrollstr, scrolllen);
-	rightwid = STATUSBAR_MARGIN(widget) * 2 + scrollwid;
+	rightwid = statusbar_margin_px(widget) * 2 + scrollwid;
 
 	/* get metadata */
 	if (widget->highlight > 0) {
 		status = getitemstatus(widget, widget->highlight);
 		statuslen = strlen(status);
 		statuswid = ctrlfnt_width(widget->fontset, status, statuslen);
-		rightwid += STATUSBAR_MARGIN(widget) + statuswid;
+		rightwid += statusbar_margin_px(widget) + statuswid;
 	}
 
 	/* clear content below right side of statusbar */
@@ -732,7 +759,7 @@ drawstatusbar(Widget *widget)
 		&(XRenderColor){ 0 },
 		widget->winw - rightwid, 0,
 		rightwid,
-		STATUSBAR_HEIGHT(widget)
+		statusbar_height_px(widget)
 	);
 
 	/* draw percentage */
@@ -741,8 +768,8 @@ drawstatusbar(Widget *widget)
 		widget->layers[LAYER_STATUSBAR].pict,
 		widget->colors[SELECT_NOT][COLOR_FG].pict,
 		(XRectangle){
-			.x = widget->winw - scrollwid - STATUSBAR_MARGIN(widget),
-			.y = STATUSBAR_MARGIN(widget),
+			.x = widget->winw - scrollwid - statusbar_margin_px(widget),
+			.y = statusbar_margin_px(widget),
 			.width = scrollwid,
 			.height = widget->fonth,
 		},
@@ -757,8 +784,8 @@ drawstatusbar(Widget *widget)
 			widget->layers[LAYER_STATUSBAR].pict,
 			widget->colors[SELECT_NOT][COLOR_FG].pict,
 			(XRectangle){
-				.x = widget->winw - rightwid + STATUSBAR_MARGIN(widget),
-				.y = STATUSBAR_MARGIN(widget),
+				.x = widget->winw - rightwid + statusbar_margin_px(widget),
+				.y = statusbar_margin_px(widget),
 				.width = statuswid,
 				.height = widget->fonth,
 			},
@@ -898,16 +925,16 @@ calcsize(Widget *widget, int w, int h)
 	old_winh = widget->winh;
 	old_pixw = widget->pixw;
 	old_pixh = widget->pixh;
-	old_statush = STATUSBAR_HEIGHT(widget);
+	old_statush = statusbar_height_px(widget);
 	if (w > 0 && h > 0) {
 		widget->winw = w;
 		widget->winh = h;
 		widget->ydiff = 0;
 	}
 	if (widget->status_enable)
-		widget->h = max(widget->winh - STATUSBAR_HEIGHT(widget), widget->itemh);
+		widget->h = max(widget->winh - statusbar_height_px(widget), 1);
 	else
-		widget->h = widget->winh;
+		widget->h = max(widget->winh, 1);
 	reserve = SCROLLBAR_WIDTH + SCROLLBAR_PAD * 2;
 	contentw = max(widget->winw - reserve, widget->itemw);
 	nrows_in_window = max(widget->h / widget->itemh, 1);
@@ -940,9 +967,10 @@ calcsize(Widget *widget, int w, int h)
 		ret = True;
 	}
 	resetlayer(widget, LAYER_RECTALPHA, widget->w, widget->h);
-	resetlayerpreserve(widget, LAYER_STATUSBAR, widget->winw, STATUSBAR_HEIGHT(widget), old_winw, old_statush);
+	resetlayerpreserve(widget, LAYER_STATUSBAR, widget->winw, statusbar_height_px(widget), old_winw, old_statush);
 	resetlayerpreserve(widget, LAYER_CANVAS, widget->winw, widget->winh, old_winw, old_winh);
 	embed_resize(widget);
+	layoutsubwindows(widget);
 	etunlock(&widget->lock);
 	return ret;
 }
@@ -974,6 +1002,69 @@ getscrollmax(Widget *widget)
 	 * complete item heights.
 	 */
 	return max((widget->nscreens - 1) * widget->itemh, 0);
+}
+
+static void
+layoutsubwindows(Widget *widget)
+{
+	unsigned int scrollbarw, statush;
+	int scrollbarx, statusy;
+
+	statush = (widget->status_enable ? max(statusbar_height_px(widget), 1) : 1);
+	scrollbarw = max(widget->winw - widget->w, 1);
+	scrollbarx = max(widget->w, 0);
+	statusy = max(widget->h, 0);
+	if (widget->contentwin != None)
+		XMoveResizeWindow(widget->display, widget->contentwin,
+			0, 0, max(widget->w, 1), max(widget->h, 1));
+	if (widget->scrollbarwin != None)
+		XMoveResizeWindow(widget->display, widget->scrollbarwin,
+			scrollbarx, 0, scrollbarw, max(widget->h, 1));
+	if (widget->statuswin != None) {
+		if (widget->status_enable) {
+			XMoveResizeWindow(widget->display, widget->statuswin,
+				0, statusy, max(widget->winw, 1), statush);
+			XMapWindow(widget->display, widget->statuswin);
+		} else {
+			XUnmapWindow(widget->display, widget->statuswin);
+		}
+	}
+}
+
+static Bool
+iswidgetwindow(Widget *widget, Window window)
+{
+	return window == widget->window ||
+	       window == widget->contentwin ||
+	       window == widget->scrollbarwin ||
+	       window == widget->statuswin;
+}
+
+static Bool
+iscontentwindow(Widget *widget, Window window)
+{
+	return window == widget->window || window == widget->contentwin;
+}
+
+static Bool
+isscrollbarwindow(Widget *widget, Window window)
+{
+	return window == widget->scrollbarwin;
+}
+
+static Bool
+isstatuswindow(Widget *widget, Window window)
+{
+	return window == widget->statuswin;
+}
+
+static Bool
+isinternalwindow(Widget *widget, Window window)
+{
+	return window == widget->contentwin ||
+	       window == widget->scrollbarwin ||
+	       window == widget->statuswin ||
+	       window == widget->scroller;
 }
 
 static Bool
@@ -1514,7 +1605,7 @@ commitdraw(Widget *widget)
 			0, 0,
 			0, 0,
 			0, widget->h,
-			widget->winw, STATUSBAR_HEIGHT(widget)
+			widget->winw, statusbar_height_px(widget)
 		);
 	}
 	drawscrollbar(widget);
@@ -1526,15 +1617,39 @@ commitdraw(Widget *widget)
 		0, 0,
 		widget->winw, widget->winh
 	);
-	XCopyArea(
-		widget->display,
-		widget->layers[LAYER_CANVAS].pix,
-		widget->window,
-		widget->gc,
-		0, 0,
-		widget->winw, widget->winh,
-		0, 0
-	);
+	if (widget->contentwin != None) {
+		XCopyArea(
+			widget->display,
+			widget->layers[LAYER_CANVAS].pix,
+			widget->contentwin,
+			widget->gc,
+			0, 0,
+			widget->w, widget->h,
+			0, 0
+		);
+	}
+	if (widget->scrollbarwin != None) {
+		XCopyArea(
+			widget->display,
+			widget->layers[LAYER_CANVAS].pix,
+			widget->scrollbarwin,
+			widget->gc,
+			widget->w, 0,
+			widget->winw - widget->w, widget->h,
+			0, 0
+		);
+	}
+	if (widget->status_enable && widget->statuswin != None) {
+		XCopyArea(
+			widget->display,
+			widget->layers[LAYER_CANVAS].pix,
+			widget->statuswin,
+			widget->gc,
+			0, widget->h,
+			widget->winw, statusbar_height_px(widget),
+			0, 0
+		);
+	}
 	XFlush(widget->display);
 	etunlock(&widget->lock);
 }
@@ -2958,6 +3073,8 @@ filter_event(Widget *widget, XEvent *ev)
 			break;
 		if (ev->xcreatewindow.override_redirect)
 			break;
+		if (isinternalwindow(widget, ev->xcreatewindow.window))
+			break;
 		embed_set(widget, CurrentTime, ev->xcreatewindow.window);
 		break;
 	case ReparentNotify:
@@ -2965,10 +3082,14 @@ filter_event(Widget *widget, XEvent *ev)
 			break;
 		if (ev->xreparent.override_redirect)
 			break;
+		if (isinternalwindow(widget, ev->xreparent.window))
+			break;
 		embed_set(widget, CurrentTime, ev->xreparent.window);
 		break;
 	case MapRequest:
 		if (ev->xmaprequest.parent != widget->window)
+			break;
+		if (isinternalwindow(widget, ev->xmaprequest.window))
 			break;
 		if (!XGetWindowAttributes(widget->display, ev->xmaprequest.window, &wattr))
 			break;
@@ -2977,12 +3098,12 @@ filter_event(Widget *widget, XEvent *ev)
 		embed_set(widget, CurrentTime, ev->xmaprequest.window);
 		break;
 	case FocusIn:
-		if (ev->xfocus.window != widget->window)
+		if (!iswidgetwindow(widget, ev->xfocus.window))
 			break;
 		embed_focus(widget, CurrentTime);
 		break;
 	case FocusOut:
-		if (ev->xfocus.window != widget->window)
+		if (!iswidgetwindow(widget, ev->xfocus.window))
 			break;
 		if (ev->xfocus.detail == NotifyInferior)
 			break;
@@ -3021,9 +3142,10 @@ close:
 		ev->type = CloseNotify;
 		return False;
 	case Expose:
-		if (ev->xexpose.window != widget->window)
+		if (!iswidgetwindow(widget, ev->xexpose.window))
 			break;
-		drain_resize_events(widget, ev);
+		if (ev->xexpose.window == widget->window)
+			drain_resize_events(widget, ev);
 		widget->redraw = True;
 		break;
 case ConfigureNotify: {
@@ -3133,7 +3255,7 @@ dnd_event_handler(XEvent *event, void *arg)
 	if (event->type != MotionNotify)
 		return 0;
 	latestmotion(widget, &event->xmotion);
-	if (event->xmotion.window != widget->window)
+	if (!iscontentwindow(widget, event->xmotion.window))
 		return 0;
 	x = event->xmotion.x;
 	y = event->xmotion.y;
@@ -3188,7 +3310,7 @@ scrollmode(Widget *widget, Time lasttime, int clickx, int clicky)
 	drawscroller(widget, gethandlepos(widget));
 	XMoveWindow(
 		widget->display, widget->scroller,
-		clickx - SCROLLER_SIZE / 2 - 1,
+		max(((max(widget->winw - widget->w, 1)) - SCROLLER_SIZE) / 2, 0),
 		clicky - SCROLLER_SIZE / 2 - 1
 	);
 	XMapRaised(widget->display, widget->scroller);
@@ -3342,7 +3464,7 @@ dragmode(Widget *widget, Time timestamp, int index, int *selitems, int *nitems)
 	);
 	if (dragwin != None)
 		XDestroyWindow(widget->display, dragwin);
-	if (drop.window != widget->window)
+	if (!iscontentwindow(widget, drop.window))
 		return WIDGET_NONE;
 	/* user dropped items on widget's own window */
 	index = getitemundercursor(widget, drop.x, drop.y);
@@ -3397,7 +3519,7 @@ scrollbarmode(Widget *widget, Time lasttime, int y)
 			setscrolloffset(widget, getscrolloffset(widget) + widget->h / 2);
 	}
 	while (XGrabPointer(
-		widget->display, widget->window, False,
+		widget->display, widget->scrollbarwin, False,
 		ButtonReleaseMask | Button1MotionMask | PointerMotionHintMask,
 		GrabModeAsync, GrabModeAsync, None, None, lasttime
 	) != GrabSuccess)
@@ -3455,7 +3577,7 @@ mainmode(Widget *widget, int *selitems, int *nitems, char **text)
 		}
 		continue;
 	case KeyPress:
-		if (ev.xkey.window != widget->window)
+		if (!iswidgetwindow(widget, ev.xkey.window))
 			continue;
 		event = keypress(widget, &ev.xkey, selitems, nitems, text);
 		if (event != WIDGET_NONE)
@@ -3464,15 +3586,22 @@ mainmode(Widget *widget, int *selitems, int *nitems, char **text)
 	case ButtonPress:
 		clickx = ev.xbutton.x;
 		clicky = ev.xbutton.y;
-		if (ev.xbutton.window != widget->window)
-			continue;
-		if (ev.xbutton.button == Button1 && isonscrollbar(widget, ev.xbutton.x, ev.xbutton.y)) {
-			event = scrollbarmode(widget, ev.xbutton.time, ev.xbutton.y);
-			if (event != WIDGET_NONE)
-				return event;
+		if (isscrollbarwindow(widget, ev.xbutton.window)) {
+			if (ev.xbutton.button == Button1) {
+				event = scrollbarmode(widget, ev.xbutton.time, ev.xbutton.y);
+				if (event != WIDGET_NONE)
+					return event;
+			}
+			if (ev.xbutton.button == Button4 || ev.xbutton.button == Button5) {
+				scroll(widget, (ev.xbutton.button == Button4 ? -SCROLL_STEP : +SCROLL_STEP));
+				widget->redraw = True;
+			}
 			clicki = -1;
 			continue;
-		} else if (ev.xbutton.button == Button1) {
+		}
+		if (!iscontentwindow(widget, ev.xbutton.window))
+			continue;
+		if (ev.xbutton.button == Button1) {
 			clicki = mouse1click(widget, &ev.xbutton);
 		} else if (ev.xbutton.button == Button4 || ev.xbutton.button == Button5) {
 			scroll(widget, (ev.xbutton.button == Button4 ? -SCROLL_STEP : +SCROLL_STEP));
@@ -3491,7 +3620,7 @@ mainmode(Widget *widget, int *selitems, int *nitems, char **text)
 		}
 		continue;
 	case ButtonRelease:
-		if (ev.xbutton.window != widget->window)
+		if (!iscontentwindow(widget, ev.xbutton.window))
 			continue;
 		if (ev.xbutton.button == 8)
 			return WIDGET_PREV;
@@ -3515,7 +3644,7 @@ mainmode(Widget *widget, int *selitems, int *nitems, char **text)
 		return WIDGET_OPEN;
 	case MotionNotify:
 		latestmotion(widget, &ev.xmotion);
-		if (ev.xmotion.window != widget->window)
+		if (!iscontentwindow(widget, ev.xmotion.window))
 			continue;
 		if (!(ev.xmotion.state & Button1Mask))
 			continue;
@@ -3693,23 +3822,56 @@ initwindow(Widget *widget, struct Options *options)
 		warnx("could not create window");
 		return RETURN_FAILURE;
 	}
-	widget->scroller = createwindow(
+	widget->contentwin = createwindow(
 		widget,
 		widget->window,
-		(XRectangle){.width = SCROLLER_SIZE, .height = SCROLLER_SIZE},
+		(XRectangle){ .x = 0, .y = 0, .width = geometry.width, .height = geometry.height },
+		ExposureMask |
+		KeyPressMask | KeyReleaseMask |
+		Button1MotionMask | PointerMotionHintMask | ButtonReleaseMask | ButtonPressMask,
+		False
+	);
+	widget->scrollbarwin = createwindow(
+		widget,
+		widget->window,
+		(XRectangle){ .x = geometry.width - (SCROLLBAR_WIDTH + SCROLLBAR_PAD * 2), .y = 0, .width = SCROLLBAR_WIDTH + SCROLLBAR_PAD * 2, .height = geometry.height },
+		ExposureMask |
+		KeyPressMask | KeyReleaseMask |
+		Button1MotionMask | PointerMotionHintMask | ButtonReleaseMask | ButtonPressMask,
+		False
+	);
+	widget->statuswin = createwindow(
+		widget,
+		widget->window,
+		(XRectangle){ .x = 0, .y = geometry.height - statusbar_height_px(widget), .width = geometry.width, .height = statusbar_height_px(widget) },
+		ExposureMask | KeyPressMask | KeyReleaseMask,
+		False
+	);
+	widget->scroller = createwindow(
+		widget,
+		widget->scrollbarwin,
+		(XRectangle){ .x = 0, .y = 0, .width = SCROLLER_SIZE, .height = SCROLLER_SIZE },
 		ButtonReleaseMask | ButtonPressMask | PointerMotionMask | PointerMotionHintMask,
 		True
 	);
-	if (widget->scroller == None) {
+	if (widget->contentwin == None || widget->scrollbarwin == None || widget->statuswin == None || widget->scroller == None) {
 		warnx("could not create window");
 		return RETURN_FAILURE;
 	}
-	widget->gc = XCreateGC(widget->display, widget->window, 0, NULL);
+	XChangeWindowAttributes(widget->display, widget->contentwin, CWBitGravity | CWWinGravity | CWBackPixel, &(XSetWindowAttributes){ .bit_gravity = NorthWestGravity, .win_gravity = NorthWestGravity, .background_pixel = widget->bgpixel });
+	XChangeWindowAttributes(widget->display, widget->scrollbarwin, CWBitGravity | CWWinGravity | CWBackPixel, &(XSetWindowAttributes){ .bit_gravity = NorthEastGravity, .win_gravity = NorthEastGravity, .background_pixel = widget->bgpixel });
+	XChangeWindowAttributes(widget->display, widget->statuswin, CWBitGravity | CWWinGravity | CWBackPixel, &(XSetWindowAttributes){ .bit_gravity = SouthWestGravity, .win_gravity = SouthWestGravity, .background_pixel = widget->bgpixel });
+	widget->gc = XCreateGC(widget->display, widget->contentwin, 0, NULL);
 	if (widget->gc == NULL) {
 		warnx("could not create graphics context");
 		return RETURN_FAILURE;
 	}
 	XSetGraphicsExposures(widget->display, widget->gc, False);
+	layoutsubwindows(widget);
+	XClearWindow(widget->display, widget->window);
+	XClearWindow(widget->display, widget->contentwin);
+	XClearWindow(widget->display, widget->scrollbarwin);
+	XClearWindow(widget->display, widget->statuswin);
 	(void)XSetWMProtocols(
 		widget->display,
 		widget->window,
@@ -4015,6 +4177,12 @@ widget_free(Widget *widget)
 		XRenderFreePicture(widget->display, widget->namepict);
 	if (widget->scroller != None)
 		XDestroyWindow(widget->display, widget->scroller);
+	if (widget->contentwin != None)
+		XDestroyWindow(widget->display, widget->contentwin);
+	if (widget->scrollbarwin != None)
+		XDestroyWindow(widget->display, widget->scrollbarwin);
+	if (widget->statuswin != None)
+		XDestroyWindow(widget->display, widget->statuswin);
 	if (widget->window != None)
 		XDestroyWindow(widget->display, widget->window);
 	if (widget->colormap != None)
@@ -4147,6 +4315,12 @@ error:
 void
 widget_map(Widget *widget)
 {
+	if (widget->contentwin != None)
+		XMapWindow(widget->display, widget->contentwin);
+	if (widget->scrollbarwin != None)
+		XMapWindow(widget->display, widget->scrollbarwin);
+	if (widget->status_enable && widget->statuswin != None)
+		XMapWindow(widget->display, widget->statuswin);
 	XMapWindow(widget->display, widget->window);
 }
 
