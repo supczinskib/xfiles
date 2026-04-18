@@ -101,7 +101,17 @@ control/dragndrop.{dbg,o}: control/dragndrop.h control/selection.h
 control/font.{dbg,o}:      control/font.h
 xfiles.{dbg,o}:  util.h widget.h icons/file.xpm icons/folder.xpm
 widget.{dbg,o}:  util.h widget.h icons/x.xpm control/selection.h control/dragndrop.h control/font.h
-icons.{dbg,o}:   ${ICONS} ${WINICONS}
+icons.o:         ${ICONS} ${WINICONS}
+icons.dbg:       ${ICONS} ${WINICONS}
+
+icons/winicon16x16.abgr: icons/winicon16x16.xpm
+	$(MAKE) -C icons winicon16x16.abgr
+icons/winicon32x32.abgr: icons/winicon32x32.xpm
+	$(MAKE) -C icons winicon32x32.abgr
+icons/winicon48x48.abgr: icons/winicon48x48.xpm
+	$(MAKE) -C icons winicon48x48.abgr
+icons/winicon64x64.abgr: icons/winicon64x64.xpm
+	$(MAKE) -C icons winicon64x64.abgr
 
 lint: ${SCRIPTS} ${MANS}
 	-shellcheck ${SCRIPTS}

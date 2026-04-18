@@ -982,6 +982,68 @@ isbreakable(char c)
 }
 
 static int
+utf8clen(const char *s)
+{
+	unsigned char c;
+
+	if (s == NULL || *s == '\0')
+		return 0;
+	c = (unsigned char)*s;
+	if (c < 0x80)
+		return 1;
+	if ((c & 0xE0) == 0xC0)
+		return s[1] != '\0' ? 2 : 1;
+	if ((c & 0xF0) == 0xE0)
+		return (s[1] != '\0' && s[2] != '\0') ? 3 : 1;
+	if ((c & 0xF8) == 0xF0)
+		return (s[1] != '\0' && s[2] != '\0' && s[3] != '\0') ? 4 : 1;
+	return 1;
+}
+
+static int
+labelfit(Widget *widget, const char *text, int *width_ret)
+{
+	int len, nextlen;
+	int w, nextw;
+	int bestlen, bestw;
+	int clen;
+
+	len = 0;
+	w = 0;
+	bestlen = 0;
+	bestw = 0;
+	while (text[len] != '\0') {
+		clen = utf8clen(text + len);
+		if (clen <= 0)
+			break;
+		nextlen = len + clen;
+		nextw = ctrlfnt_width(widget->fontset, text, nextlen);
+		if (nextw > LABELWIDTH)
+			break;
+		len = nextlen;
+		w = nextw;
+		if (text[len] == '\0' || isspace((unsigned char)text[len])
+		    || isbreakable(text[len])) {
+			bestlen = len;
+			bestw = w;
+		}
+	}
+	if (text[len] == '\0') {
+		if (width_ret != NULL)
+			*width_ret = w;
+		return len;
+	}
+	if (bestlen > 0) {
+		if (width_ret != NULL)
+			*width_ret = bestw;
+		return bestlen;
+	}
+	if (width_ret != NULL)
+		*width_ret = w;
+	return len;
+}
+
+static int
 getnrowsindir(Widget *widget)
 {
 	int rows;
@@ -1319,28 +1381,9 @@ drawlabel(Widget *widget, int index, int x, int y)
 		textlen = strlen(text);
 		textw = ctrlfnt_width(widget->fontset, text, textlen);
 		if (widget->nlines[index] < NLINES && textw >= LABELWIDTH) {
-			textlen = len = 0;
-			w = 0;
-			while (w < LABELWIDTH) {
-				textlen = len;
-				textw = w;
-				while (isspace(text[len]))
-					len++;
-				while (isbreakable(text[len]))
-					len++;
-				while (text[len] != '\0' && !isspace(text[len]) && !isbreakable(text[len]))
-					len++;
-				w = ctrlfnt_width(widget->fontset, text, len);
-				if (text[len] == '\0') {
-					break;
-				}
-			}
-			if (textw > 0) {
+			textlen = labelfit(widget, text, &textw);
+			if (textlen > 0 && text[textlen] != '\0')
 				widget->nlines[index] = min(widget->nlines[index] + 1, NLINES);
-			} else {
-				textlen = len;
-				textw = w;
-			}
 		}
 		textw = min(LABELWIDTH, textw);
 		maxw = max(textw, maxw);

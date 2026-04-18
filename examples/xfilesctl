@@ -502,7 +502,7 @@ rename() {
 	done
 	edit "$tempfile" || exit 1
 	mv -- "$@" "$tempdir" || exit 1
-	while read -r target; do
+	while IFS= read -r target || [ -n "$target" ]; do
 		source="$tempdir/${1##*/}"
 		if test -z "$target"; then
 			trash "$source"
