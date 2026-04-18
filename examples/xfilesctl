@@ -330,8 +330,12 @@ err() {
 	exit 1
 }
 
-menu() {
-	xmenu
+menu_topfirst() {
+	xmenu -u
+}
+
+menu_uniform() {
+	xmenu -U
 }
 
 edit() {
@@ -357,7 +361,7 @@ asktext() {
 confirm() {
 	prompt="$1"
 	"$ask" || return 0
-		choice=$(printf '%s\n\t%s\n\t%s\n' "$prompt" "$L_YES" "$L_NO" | menu)
+		choice=$(printf '%s\n\t%s\n\t%s\n' "$prompt" "$L_YES" "$L_NO" | menu_topfirst)
 	case "$choice" in
 	("$L_YES") return 0 ;;
 	(*) return 1 ;;
@@ -544,7 +548,7 @@ changedir() {
 }
 
 dropmenu() {
-	option=$(printf '%s\n%s\n%s\n' "$L_COPY" "$L_MOVE" "$L_LINK" | menu)
+	option=$(printf '%s\n%s\n%s\n' "$L_COPY" "$L_MOVE" "$L_LINK" | menu_topfirst)
 	case "$option" in
 	("$L_COPY") copy_here "$@" ;;
 	("$L_MOVE") move_here "$@" ;;
@@ -553,7 +557,7 @@ dropmenu() {
 }
 
 dirmenu() {
-	option=$(cat <<EOF | menu
+	option=$(cat <<EOF | menu_uniform
 $L_GO_UP
 $L_PASTE
 $L_SORT
@@ -577,7 +581,7 @@ EOF
 
 filemenu() {
 	if [ "$#" -eq 1 ] && istrashdir "$1"; then
-		option=$(printf '%s\n' "$L_EMPTY_TRASH" | menu)
+		option=$(printf '%s\n' "$L_EMPTY_TRASH" | menu_topfirst)
 		case "$option" in ("$L_EMPTY_TRASH") emptytrash ;; esac
 		return
 	fi
@@ -595,14 +599,14 @@ $L_MOVE_TO_TRASH
 $L_EDIT
 EOF
 		;;
-	esac | menu)
+	esac | menu_topfirst)
 	case "$option" in
 	("$L_CUT") cutclip "$@" ;;
 	("$L_COPY") copyclip "$@" ;;
 	("$L_RENAME") rename "$@" ;;
 	("$L_MOVE_TO_TRASH") trash "$@" ;;
 	("$L_RESTORE") restore "$@" ;;
-	("$L_EDIT") edit "$1" & ;;
+	("$L_EDIT") edit "$1"; changedir "." ;;
 	esac
 }
 
