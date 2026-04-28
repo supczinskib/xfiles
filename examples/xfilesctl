@@ -57,6 +57,7 @@ tr() {
 		(en_US:LINK) printf '%s' 'Link' ;;
 		(en_US:RENAME) printf '%s' 'Rename' ;;
 		(en_US:MOVE_TO_TRASH) printf '%s' 'Move to Trash' ;;
+		(en_US:OPEN) printf '%s' 'Open' ;;
 		(en_US:EDIT) printf '%s' 'Edit' ;;
 		(en_US:RESTORE) printf '%s' 'Restore' ;;
 		(en_US:EMPTY_TRASH) printf '%s' 'Empty Trash' ;;
@@ -78,6 +79,7 @@ tr() {
 		(pl_PL:LINK) printf '%s' 'Utwórz link' ;;
 		(pl_PL:RENAME) printf '%s' 'Zmień nazwę' ;;
 		(pl_PL:MOVE_TO_TRASH) printf '%s' 'Przenieś do kosza' ;;
+		(pl_PL:OPEN) printf '%s' 'Otwórz' ;;
 		(pl_PL:EDIT) printf '%s' 'Edytuj' ;;
 		(pl_PL:RESTORE) printf '%s' 'Przywróć' ;;
 		(pl_PL:EMPTY_TRASH) printf '%s' 'Opróżnij kosz' ;;
@@ -99,6 +101,7 @@ tr() {
 		(de_DE:LINK) printf '%s' 'Verknüpfung erstellen' ;;
 		(de_DE:RENAME) printf '%s' 'Umbenennen' ;;
 		(de_DE:MOVE_TO_TRASH) printf '%s' 'In den Papierkorb verschieben' ;;
+		(de_DE:OPEN) printf '%s' 'Öffnen' ;;
 		(de_DE:EDIT) printf '%s' 'Bearbeiten' ;;
 		(de_DE:RESTORE) printf '%s' 'Wiederherstellen' ;;
 		(de_DE:EMPTY_TRASH) printf '%s' 'Papierkorb leeren' ;;
@@ -120,6 +123,7 @@ tr() {
 		(fr_FR:LINK) printf '%s' 'Créer un lien' ;;
 		(fr_FR:RENAME) printf '%s' 'Renommer' ;;
 		(fr_FR:MOVE_TO_TRASH) printf '%s' 'Mettre à la corbeille' ;;
+		(fr_FR:OPEN) printf '%s' 'Ouvrir' ;;
 		(fr_FR:EDIT) printf '%s' 'Modifier' ;;
 		(fr_FR:RESTORE) printf '%s' 'Restaurer' ;;
 		(fr_FR:EMPTY_TRASH) printf '%s' 'Vider la corbeille' ;;
@@ -141,6 +145,7 @@ tr() {
 		(it_IT:LINK) printf '%s' 'Crea collegamento' ;;
 		(it_IT:RENAME) printf '%s' 'Rinomina' ;;
 		(it_IT:MOVE_TO_TRASH) printf '%s' 'Sposta nel cestino' ;;
+		(it_IT:OPEN) printf '%s' 'Apri' ;;
 		(it_IT:EDIT) printf '%s' 'Modifica' ;;
 		(it_IT:RESTORE) printf '%s' 'Ripristina' ;;
 		(it_IT:EMPTY_TRASH) printf '%s' 'Svuota cestino' ;;
@@ -162,6 +167,7 @@ tr() {
 		(es_ES:LINK) printf '%s' 'Crear enlace' ;;
 		(es_ES:RENAME) printf '%s' 'Renombrar' ;;
 		(es_ES:MOVE_TO_TRASH) printf '%s' 'Mover a la papelera' ;;
+		(es_ES:OPEN) printf '%s' 'Abrir' ;;
 		(es_ES:EDIT) printf '%s' 'Editar' ;;
 		(es_ES:RESTORE) printf '%s' 'Restaurar' ;;
 		(es_ES:EMPTY_TRASH) printf '%s' 'Vaciar papelera' ;;
@@ -183,6 +189,7 @@ tr() {
 		(pt_PT:LINK) printf '%s' 'Criar ligação' ;;
 		(pt_PT:RENAME) printf '%s' 'Renomear' ;;
 		(pt_PT:MOVE_TO_TRASH) printf '%s' 'Mover para o lixo' ;;
+		(pt_PT:OPEN) printf '%s' 'Abrir' ;;
 		(pt_PT:EDIT) printf '%s' 'Editar' ;;
 		(pt_PT:RESTORE) printf '%s' 'Restaurar' ;;
 		(pt_PT:EMPTY_TRASH) printf '%s' 'Esvaziar lixo' ;;
@@ -204,6 +211,7 @@ tr() {
 		(nl_NL:LINK) printf '%s' 'Koppeling maken' ;;
 		(nl_NL:RENAME) printf '%s' 'Hernoemen' ;;
 		(nl_NL:MOVE_TO_TRASH) printf '%s' 'Naar prullenbak verplaatsen' ;;
+		(nl_NL:OPEN) printf '%s' 'Openen' ;;
 		(nl_NL:EDIT) printf '%s' 'Bewerken' ;;
 		(nl_NL:RESTORE) printf '%s' 'Herstellen' ;;
 		(nl_NL:EMPTY_TRASH) printf '%s' 'Prullenbak legen' ;;
@@ -225,6 +233,7 @@ tr() {
 		(ru_RU:LINK) printf '%s' 'Создать ссылку' ;;
 		(ru_RU:RENAME) printf '%s' 'Переименовать' ;;
 		(ru_RU:MOVE_TO_TRASH) printf '%s' 'Переместить в корзину' ;;
+		(ru_RU:OPEN) printf '%s' 'Открыть' ;;
 		(ru_RU:EDIT) printf '%s' 'Редактировать' ;;
 		(ru_RU:RESTORE) printf '%s' 'Восстановить' ;;
 		(ru_RU:EMPTY_TRASH) printf '%s' 'Очистить корзину' ;;
@@ -246,6 +255,7 @@ tr() {
 		(tr_TR:LINK) printf '%s' 'Bağlantı oluştur' ;;
 		(tr_TR:RENAME) printf '%s' 'Yeniden adlandır' ;;
 		(tr_TR:MOVE_TO_TRASH) printf '%s' 'Çöpe taşı' ;;
+		(tr_TR:OPEN) printf '%s' 'Aç' ;;
 		(tr_TR:EDIT) printf '%s' 'Düzenle' ;;
 		(tr_TR:RESTORE) printf '%s' 'Geri yükle' ;;
 		(tr_TR:EMPTY_TRASH) printf '%s' 'Çöpü boşalt' ;;
@@ -267,6 +277,7 @@ tr() {
 		(zh_CN:LINK) printf '%s' '创建链接' ;;
 		(zh_CN:RENAME) printf '%s' '重命名' ;;
 		(zh_CN:MOVE_TO_TRASH) printf '%s' '移到回收站' ;;
+		(zh_CN:OPEN) printf '%s' '打开' ;;
 		(zh_CN:EDIT) printf '%s' '编辑' ;;
 		(zh_CN:RESTORE) printf '%s' '还原' ;;
 		(zh_CN:EMPTY_TRASH) printf '%s' '清空回收站' ;;
@@ -288,6 +299,7 @@ tr() {
 		(ar_SA:LINK) printf '%s' 'إنشاء رابط' ;;
 		(ar_SA:RENAME) printf '%s' 'إعادة تسمية' ;;
 		(ar_SA:MOVE_TO_TRASH) printf '%s' 'نقل إلى سلة المهملات' ;;
+		(ar_SA:OPEN) printf '%s' 'فتح' ;;
 		(ar_SA:EDIT) printf '%s' 'تحرير' ;;
 		(ar_SA:RESTORE) printf '%s' 'استعادة' ;;
 		(ar_SA:EMPTY_TRASH) printf '%s' 'إفراغ سلة المهملات' ;;
@@ -315,6 +327,7 @@ L_MOVE=$(tr MOVE)
 L_LINK=$(tr LINK)
 L_RENAME=$(tr RENAME)
 L_MOVE_TO_TRASH=$(tr MOVE_TO_TRASH)
+L_OPEN=$(tr OPEN)
 L_EDIT=$(tr EDIT)
 L_RESTORE=$(tr RESTORE)
 L_EMPTY_TRASH=$(tr EMPTY_TRASH)
@@ -339,7 +352,11 @@ menu_uniform() {
 }
 
 edit() {
-	xterm -into "$WINDOWID" -bw 0 -e "$EDITOR" -- "$@"
+	"$EDITOR" "$@"
+}
+
+open() {
+	"$OPENER" "$@"
 }
 
 asktext() {
@@ -595,8 +612,9 @@ EOF
 $L_CUT
 $L_COPY
 $L_RENAME
-$L_MOVE_TO_TRASH
+$L_OPEN
 $L_EDIT
+$L_MOVE_TO_TRASH
 EOF
 		;;
 	esac | menu_topfirst)
@@ -606,6 +624,7 @@ EOF
 	("$L_RENAME") rename "$@" ;;
 	("$L_MOVE_TO_TRASH") trash "$@" ;;
 	("$L_RESTORE") restore "$@" ;;
+	("$L_OPEN") open "$@"; changedir "." ;;
 	("$L_EDIT") edit "$1"; changedir "." ;;
 	esac
 }
