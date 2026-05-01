@@ -364,7 +364,7 @@ asktext() {
 	tmp="${TMPDIR:-/tmp}/xfilesctl-input-$$"
 	rm -f -- "$tmp"
 	: > "$tmp" || return 1
-	xterm -into "$WINDOWID" -bw 0 -title "$label" -e "$EDITOR" -- "$tmp"
+	xterm -into "$WINDOWID" -bw 0 -title "$label" -e "$EDITOR" "$tmp"
 	status=$?
 	if [ $status -ne 0 ]; then
 		rm -f -- "$tmp"

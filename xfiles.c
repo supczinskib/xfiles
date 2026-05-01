@@ -746,59 +746,11 @@ error:
 	return;
 }
 
-#define DEF_EDITOR      "nano"
-#define DEF_TERMINAL    "xterm"
-
-static bool
-should_edit_empty_text(const char *path)
-{
-	struct stat sb;
-
-	if (stat(path, &sb) == -1)
-		return false;
-	if (!S_ISREG(sb.st_mode))
-		return false;
-	return sb.st_size == 0;
-}
-
-static void
-spawn_editor_for_file(const char *path)
-{
-	const char *terminal, *editor;
-	pid_t pid;
-
-	terminal = getenv("TERMINAL");
-	if (terminal == NULL || *terminal == ' ')
-		terminal = DEF_TERMINAL;
-	editor = getenv("EDITOR");
-	if (editor == NULL || *editor == ' ')
-		editor = DEF_EDITOR;
-
-	if ((pid = efork()) == 0) {
-		if (efork() == 0) {
-			eexec((char *[]){
-				(char *)terminal,
-				"-e",
-				(char *)editor,
-				(char *)path,
-				NULL,
-			});
-			exit(EXIT_FAILURE);
-		}
-		exit(EXIT_SUCCESS);
-	}
-	waitpid(pid, NULL, 0);
-}
 
 static void
 fileopen(struct FM *fm, char *path)
 {
 	pid_t pid;
-
-	if (should_edit_empty_text(path)) {
-		spawn_editor_for_file(path);
-		return;
-	}
 
 	if ((pid = efork()) == 0) {
 		if (efork() == 0) {
