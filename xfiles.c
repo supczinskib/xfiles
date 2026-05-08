@@ -1034,6 +1034,8 @@ changedir(struct FM *fm, const char *path, int force_refresh)
 		fm->nentries,
 		scrl
 	);
+	if (retval == RETURN_SUCCESS)
+		watcher_start(fm);
 done:
 	createthumbthread(fm);
 	return retval;
